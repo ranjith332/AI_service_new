@@ -1,0 +1,148 @@
+{
+  "info": {
+    "_postman_id": "9a75f8a0-3a3d-41d4-a6c3-10d90d0b3b8d",
+    "name": "Doctor Healix AI Service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Postman collection for Doctor Healix AI query, token recharge, and token subscription APIs."
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "AI Query - Built-in Example",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenant_id\": \"{{tenantId}}\",\n  \"user_query\": \"Show today's appointments\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/ai/query",
+          "host": ["{{baseUrl}}"],
+          "path": ["ai", "query"]
+        }
+      }
+    },
+    {
+      "name": "AI Query - Dynamic All Tables Example",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenant_id\": \"{{tenantId}}\",\n  \"user_query\": \"Show the latest 10 token transactions for this hospital\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/ai/query",
+          "host": ["{{baseUrl}}"],
+          "path": ["ai", "query"]
+        }
+      }
+    },
+    {
+      "name": "Token Catalog",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/billing/tokens/catalog",
+          "host": ["{{baseUrl}}"],
+          "path": ["billing", "tokens", "catalog"]
+        }
+      }
+    },
+    {
+      "name": "Token Wallet Summary",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/billing/tokens/wallet/{{tenantId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["billing", "tokens", "wallet", "{{tenantId}}"]
+        }
+      }
+    },
+    {
+      "name": "Init Recharge",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenant_id\": \"{{tenantId}}\",\n  \"package_code\": \"growth_2500\",\n  \"customer\": {\n    \"customer_name\": \"Doctor Healix Billing\",\n    \"customer_email\": \"{{customerEmail}}\",\n    \"customer_phone\": \"{{customerPhone}}\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/billing/tokens/recharge/init",
+          "host": ["{{baseUrl}}"],
+          "path": ["billing", "tokens", "recharge", "init"]
+        }
+      }
+    },
+    {
+      "name": "Init Subscription",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenant_id\": \"{{tenantId}}\",\n  \"plan_code\": \"monthly_3000\",\n  \"customer\": {\n    \"customer_name\": \"Doctor Healix Billing\",\n    \"customer_email\": \"{{customerEmail}}\",\n    \"customer_phone\": \"{{customerPhone}}\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/billing/tokens/subscriptions/init",
+          "host": ["{{baseUrl}}"],
+          "path": ["billing", "tokens", "subscriptions", "init"]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "tenantId",
+      "value": "hospital_001"
+    },
+    {
+      "key": "customerEmail",
+      "value": "ops@hospital.com"
+    },
+    {
+      "key": "customerPhone",
+      "value": "9876543210"
+    }
+  ]
+}

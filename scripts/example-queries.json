@@ -1,0 +1,50 @@
+[
+  {
+    "name": "Todays appointments",
+    "payload": {
+      "tenant_id": "hospital_001",
+      "user_query": "Show today's appointments"
+    },
+    "expected_strategy": "sql"
+  },
+  {
+    "name": "Diabetic patients",
+    "payload": {
+      "tenant_id": "hospital_001",
+      "user_query": "List diabetic patients"
+    },
+    "expected_strategy": "sql"
+  },
+  {
+    "name": "Latest lab report for John",
+    "payload": {
+      "tenant_id": "hospital_001",
+      "user_query": "Get last lab report of patient John"
+    },
+    "expected_strategy": "sql"
+  },
+  {
+    "name": "Revenue this month",
+    "payload": {
+      "tenant_id": "hospital_001",
+      "user_query": "Revenue this month"
+    },
+    "expected_strategy": "sql"
+  },
+  {
+    "name": "Doctor with most appointments",
+    "payload": {
+      "tenant_id": "hospital_001",
+      "user_query": "Which doctor has most appointments?"
+    },
+    "expected_strategy": "sql"
+  },
+  {
+    "name": "Semantic prescription lookup",
+    "payload": {
+      "tenant_id": "hospital_001",
+      "user_query": "Find prescriptions mentioning metformin and poor adherence"
+    },
+    "expected_strategy": "hybrid"
+  }
+]

@@ -1,0 +1,85 @@
+{
+  "patients": {
+    "table": "patients",
+    "idColumn": "id",
+    "tenantColumn": "tenant_id",
+    "nameColumn": "full_name",
+    "updatedAtColumn": "updated_at",
+    "conditionColumn": "chronic_conditions",
+    "genderColumn": "gender",
+    "dobColumn": "date_of_birth"
+  },
+  "doctors": {
+    "table": "doctors",
+    "idColumn": "id",
+    "tenantColumn": "tenant_id",
+    "nameColumn": "full_name",
+    "specialtyColumn": "specialty",
+    "updatedAtColumn": "updated_at"
+  },
+  "appointments": {
+    "table": "appointments",
+    "idColumn": "id",
+    "tenantColumn": "tenant_id",
+    "patientIdColumn": "patient_id",
+    "doctorIdColumn": "doctor_id",
+    "scheduledAtColumn": "opd_date",
+    "statusColumn": "is_completed",
+    "updatedAtColumn": "updated_at"
+  },
+  "lab_reports": {
+    "table": "lab_reports",
+    "idColumn": "id",
+    "tenantColumn": "tenant_id",
+    "patientIdColumn": "patient_id",
+    "nameColumn": "report_name",
+    "summaryColumn": "summary",
+    "textColumn": "result_text",
+    "reportedAtColumn": "reported_at",
+    "updatedAtColumn": "updated_at"
+  },
+  "pathology_reports": {
+    "table": "pathology_reports",
+    "idColumn": "id",
+    "tenantColumn": "tenant_id",
+    "patientIdColumn": "patient_id",
+    "nameColumn": "report_name",
+    "summaryColumn": "summary",
+    "textColumn": "result_text",
+    "reportedAtColumn": "reported_at",
+    "updatedAtColumn": "updated_at"
+  },
+  "prescriptions": {
+    "table": "prescriptions",
+    "idColumn": "id",
+    "tenantColumn": "tenant_id",
+    "patientIdColumn": "patient_id",
+    "doctorIdColumn": "doctor_id",
+    "medicationColumn": "medication_name",
+    "dosageColumn": "dosage",
+    "instructionsColumn": "instructions",
+    "prescribedAtColumn": "prescribed_at",
+    "updatedAtColumn": "updated_at"
+  },
+  "billing": {
+    "table": "billing",
+    "idColumn": "id",
+    "tenantColumn": "tenant_id",
+    "patientIdColumn": "patient_id",
+    "doctorIdColumn": "doctor_id",
+    "amountColumn": "total_amount",
+    "statusColumn": "payment_status",
+    "billedAtColumn": "billed_at",
+    "updatedAtColumn": "updated_at"
+  },
+  "medical_records": {
+    "table": "medical_records",
+    "idColumn": "id",
+    "tenantColumn": "tenant_id",
+    "patientIdColumn": "patient_id",
+    "diagnosisColumn": "diagnosis_summary",
+    "conditionsColumn": "conditions",
+    "allergiesColumn": "allergies",
+    "updatedAtColumn": "updated_at"
+  }
+}
