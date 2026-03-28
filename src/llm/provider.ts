@@ -101,18 +101,20 @@ export class LlmProvider {
   private getCandidates(useFastModel = false): Array<{ name: ProviderName; model: ChatOpenAI }> {
     const candidates: Array<{ name: ProviderName; model: ChatOpenAI }> = [];
 
-    if (useFastModel && this.nvidiaIntentModel) {
-      candidates.push({ name: "nvidia_qwen", model: this.nvidiaIntentModel });
-      return candidates;
-    }
-
-    if (this.nvidiaQwenModel) {
-      candidates.push({ name: "nvidia_qwen", model: this.nvidiaQwenModel });
-      return candidates;
-    }
-
+    // Prioritize OpenAI as requested by user
     if (this.openAiModel) {
       candidates.push({ name: "openai", model: this.openAiModel });
+    }
+
+    // Add Nvidia Qwen as fallback
+    if (this.nvidiaQwenModel) {
+      candidates.push({ name: "nvidia_qwen", model: this.nvidiaQwenModel });
+    }
+
+    // Replace first candidate with fast model if requested and available
+    if (useFastModel && this.nvidiaIntentModel) {
+      // In fast mode, we place the intent model first
+      candidates.unshift({ name: "nvidia_qwen", model: this.nvidiaIntentModel });
     }
 
     return candidates;

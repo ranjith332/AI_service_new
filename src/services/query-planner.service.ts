@@ -20,7 +20,12 @@ export class QueryPlannerService {
     prescription: "prescriptions",
     doctor: "doctors",
     medicine: "medicines",
-    user: "users"
+    user: "users",
+    dependent: "dependents",
+    schedule: "schedules",
+    scheduleday: "scheduleDays",
+    doctorholiday: "doctorHolidays",
+    doctorsession: "doctorSessions"
   };
 
   const normalizedTarget = targetMapping[intent.target] || intent.target;
@@ -29,21 +34,23 @@ export class QueryPlannerService {
     normalizedTarget === "prescriptions" ||
     normalizedTarget === "medicines" ||
     normalizedTarget === "doctors" ||
-    normalizedTarget === "patients"
+    normalizedTarget === "patients" ||
+    normalizedTarget === "dependents" ||
+    normalizedTarget === "doctorHolidays"
       ? [normalizedTarget]
-      : ["patients", "prescriptions", "medicines", "doctors"];
+      : ["patients", "prescriptions", "medicines", "doctors", "dependents"];
 
   const runSql =
     intent.needsSql ||
     normalizedTarget === "unknown" ||
-    ["appointments", "patients", "doctors", "medicines", "users"].includes(normalizedTarget) ||
+    ["appointments", "patients", "doctors", "medicines", "users", "dependents", "schedules", "scheduleDays", "doctorHolidays", "doctorSessions"].includes(normalizedTarget) ||
     intent.operation === "latest" ||
     intent.metric !== "none";
 
   const runVector =
     intent.needsVector ||
     intent.operation === "semantic_lookup" ||
-    ["prescriptions", "medicines", "doctors", "patients"].includes(normalizedTarget) ||
+    ["prescriptions", "medicines", "doctors", "patients", "dependents", "doctorHolidays"].includes(normalizedTarget) ||
     normalizedTarget === "unknown";
 
   const strategy: ExecutionStrategy = runSql && runVector ? "hybrid" : runVector ? "vector" : "sql";

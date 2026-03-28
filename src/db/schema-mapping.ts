@@ -173,6 +173,103 @@ export interface MedicineTableMapping {
   updatedAt: string;
 }
 
+export interface DependentTableMapping {
+  table: string;
+  id: string;
+  user: string;
+  patient: string;
+  name: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  age: string;
+  gender: string;
+  dob: string;
+  bloodGroup: string;
+  relation: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScheduleTableMapping {
+  table: string;
+  id: string;
+  doctor: string;
+  perPatientTime: string;
+  scheduleType: string;
+  tokenBlockOption: string;
+  tenant: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScheduleDayTableMapping {
+  table: string;
+  id: string;
+  doctor: string;
+  schedule: string;
+  availableOn: string;
+  availableFrom: string;
+  availableTo: string;
+  maxTokens: string;
+  useSlots: string;
+  opdTokens: string;
+  popTokens: string;
+  emergencyTokens: string;
+  morningTokens: string;
+  morningStartTime: string;
+  morningEndTime: string;
+  afternoonTokens: string;
+  afternoonStartTime: string;
+  afternoonEndTime: string;
+  nightTokens: string;
+  nightStartTime: string;
+  nightEndTime: string;
+  morningPopTokens: string;
+  morningPopStartTime: string;
+  morningPopEndTime: string;
+  afternoonPopTokens: string;
+  afternoonPopStartTime: string;
+  afternoonPopEndTime: string;
+  nightPopTokens: string;
+  nightPopStartTime: string;
+  nightPopEndTime: string;
+  morningEmergencyTokens: string;
+  afternoonEmergencyTokens: string;
+  nightEmergencyTokens: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DoctorHolidayTableMapping {
+  table: string;
+  id: string;
+  name: string;
+  doctor: string;
+  tenant: string;
+  date: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DoctorSessionTableMapping {
+  table: string;
+  id: string;
+  doctor: string;
+  tenant: string;
+  sessionStatus: string;
+  startedAt: string;
+  pausedAt: string;
+  resumedAt: string;
+  stoppedAt: string;
+  delayTime: string;
+  delayReason: string;
+  date: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SchemaMapping {
   users: UserTableMapping;
   patients: PatientTableMapping;
@@ -181,6 +278,11 @@ export interface SchemaMapping {
   prescriptions: PrescriptionTableMapping;
   prescription: PrescriptionTableMapping;
   medicines: MedicineTableMapping;
+  dependents: DependentTableMapping;
+  schedules: ScheduleTableMapping;
+  scheduleDays: ScheduleDayTableMapping;
+  doctorHolidays: DoctorHolidayTableMapping;
+  doctorSessions: DoctorSessionTableMapping;
 }
 
 const defaultMapping: SchemaMapping = {
@@ -377,6 +479,98 @@ const defaultMapping: SchemaMapping = {
     sideEffects: "side_effects",
     image: "image",
     tenant: "tenant_id",
+    createdAt: "created_at",
+    updatedAt: "updated_at"
+  },
+  dependents: {
+    table: "dependents",
+    id: "id",
+    user: "user_id",
+    patient: "patient_id",
+    name: "name",
+    firstName: "first_name",
+    lastName: "last_name",
+    email: "email",
+    phone: "phone",
+    age: "age",
+    gender: "gender",
+    dob: "dob",
+    bloodGroup: "blood_group",
+    relation: "relation",
+    createdAt: "created_at",
+    updatedAt: "updated_at"
+  },
+  schedules: {
+    table: "schedules",
+    id: "id",
+    doctor: "doctor_id",
+    perPatientTime: "per_patient_time",
+    scheduleType: "schedule_type",
+    tokenBlockOption: "token_block_option",
+    tenant: "tenant_id",
+    createdAt: "created_at",
+    updatedAt: "updated_at"
+  },
+  scheduleDays: {
+    table: "schedule_days",
+    id: "id",
+    doctor: "doctor_id",
+    schedule: "schedule_id",
+    availableOn: "available_on",
+    availableFrom: "available_from",
+    availableTo: "available_to",
+    maxTokens: "max_tokens",
+    useSlots: "use_slots",
+    opdTokens: "opd_tokens",
+    popTokens: "pop_tokens",
+    emergencyTokens: "emergency_tokens",
+    morningTokens: "morning_tokens",
+    morningStartTime: "morning_start_time",
+    morningEndTime: "morning_end_time",
+    afternoonTokens: "afternoon_tokens",
+    afternoonStartTime: "afternoon_start_time",
+    afternoonEndTime: "afternoon_end_time",
+    nightTokens: "night_tokens",
+    nightStartTime: "night_start_time",
+    nightEndTime: "night_end_time",
+    morningPopTokens: "morning_pop_tokens",
+    morningPopStartTime: "morning_pop_start_time",
+    morningPopEndTime: "morning_pop_end_time",
+    afternoonPopTokens: "afternoon_pop_tokens",
+    afternoonPopStartTime: "afternoon_pop_start_time",
+    afternoonPopEndTime: "afternoon_pop_end_time",
+    nightPopTokens: "night_pop_tokens",
+    nightPopStartTime: "night_pop_start_time",
+    nightPopEndTime: "night_pop_end_time",
+    morningEmergencyTokens: "morning_emergency_tokens",
+    afternoonEmergencyTokens: "afternoon_emergency_tokens",
+    nightEmergencyTokens: "night_emergency_tokens",
+    createdAt: "created_at",
+    updatedAt: "updated_at"
+  },
+  doctorHolidays: {
+    table: "doctor_holidays",
+    id: "id",
+    name: "name",
+    doctor: "doctor_id",
+    tenant: "tenant_id",
+    date: "date",
+    createdAt: "created_at",
+    updatedAt: "updated_at"
+  },
+  doctorSessions: {
+    table: "doctor_sessions",
+    id: "id",
+    doctor: "doctor_id",
+    tenant: "tenant_id",
+    sessionStatus: "session_status",
+    startedAt: "started_at",
+    pausedAt: "paused_at",
+    resumedAt: "resumed_at",
+    stoppedAt: "stopped_at",
+    delayTime: "delay_time",
+    delayReason: "delay_reason",
+    date: "date",
     createdAt: "created_at",
     updatedAt: "updated_at"
   }

@@ -12,7 +12,7 @@ export const queryBodySchema = z.object({
 
 export const intentSchema = z.object({
   summary: z.string().default("No summary"),
-  operation: z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary"]).default("list"),
+  operation: z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary", "book"]).default("list"),
   target: z.preprocess(
     (val) => (typeof val === "string" ? val.toLowerCase() : val),
     z.enum([
@@ -28,6 +28,16 @@ export const intentSchema = z.object({
       "medicine",
       "users",
       "user",
+      "dependents",
+      "dependent",
+      "schedules",
+      "schedule",
+      "scheduledays",
+      "scheduleday",
+      "doctorholidays",
+      "doctorholiday",
+      "doctorsessions",
+      "doctorsession",
       "unknown"
     ])
   ).default("unknown"),
@@ -44,6 +54,15 @@ export const intentSchema = z.object({
   needsSql: z.boolean().default(true),
   needsVector: z.boolean().default(false),
   sort: z.enum(["latest", "oldest", "highest", "lowest"]).default("latest"),
+  needsClarification: z.boolean().default(false),
+  clarificationMessage: z.string().nullable().optional(),
+  bookingDetails: z.object({
+    name: z.string().nullable().optional(),
+    doctor: z.string().nullable().optional(),
+    session: z.enum(["morning", "afternoon", "night", "none"]).default("none"),
+    token: z.number().nullable().optional(),
+    appointmentDate: z.string().nullable().optional()
+  }).default({ session: "none" }),
   confidence: z.number().min(0).max(1).default(1)
 });
 

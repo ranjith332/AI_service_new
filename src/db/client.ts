@@ -50,6 +50,15 @@ export class DatabaseClient {
     const [rows] = await this.mysqlPool.query(query.text, query.values);
     const output = rows as T[];
 
+    logger.debug(
+      {
+        description: query.description,
+        rowCount: output.length,
+        rows: output // Log the actual results for visibility
+      },
+      "SQL query execution complete"
+    );
+
     return {
       rows: output,
       rowCount: output.length
