@@ -18,7 +18,8 @@ export class DynamicSqlPlannerService {
       "Prefer explicit joins when needed.",
       "Keep limit conservative and at most 100.",
       "Use aggregates only when the user asks for counts, totals, averages, minima, or maxima.",
-      "If the query asks for many columns, still keep the selected columns focused and relevant."
+      "If the query asks for many columns, still keep the selected columns focused and relevant.",
+      "CRITICAL: Return ONLY valid JSON. No introductory text or conversational filler."
     ].join(" ");
 
     const user = JSON.stringify({

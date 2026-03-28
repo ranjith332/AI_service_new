@@ -11,11 +11,11 @@ export class IntentService {
       "Return only values grounded in the user request.",
       "Do not invent identifiers, patients, or filters.",
       "Assume a shared database where tenant isolation is mandatory and already enforced downstream.",
-      "Use needsVector=true only for semantic search over free-text clinical content such as report summaries, prescriptions, or medical notes.",
+      "Use needsVector=true for semantic search over free-text clinical content.",
       "Use needsSql=true for counts, lists, latest records, names, joins, billing, appointments, or aggregations.",
-      "If the request appears to target a database table outside the core built-in healthcare targets, set target=unknown and keep needsSql=true.",
-      "If the user asks for the latest or most recent report, use operation=latest.",
-      "If unsure, choose target=unknown and set confidence below 0.5."
+      "The result MUST be a flat JSON object with these exact keys: summary (string), operation (list|aggregate|latest|lookup|semantic_lookup|summary), target (appointments|patients|prescriptions|doctors|medicines|users|unknown), patientName (string|null), doctorName (string|null), condition (string|null), metric (none|revenue|appointment_count|doctor_with_most_appointments), timeRange (object with preset: today|yesterday|this_week|this_month|all_time|latest|custom), limit (number), needsSql (boolean), needsVector (boolean), sort (latest|oldest|highest|lowest), confidence (number).",
+      "Do NOT use 'hybrid' as a target. Use a real table name or 'unknown'.",
+      "CRITICAL: Return ONLY the flat JSON object. No conversational filler."
     ].join(" ");
 
     const user = JSON.stringify({
@@ -26,7 +26,8 @@ export class IntentService {
     const result = await this.llm.invokeStructured(intentSchema, {
       system,
       user,
-      schemaName: "DoctorHealixIntent"
+      schemaName: "DoctorHealixIntent",
+      useFastModel: true
     });
 
     return {

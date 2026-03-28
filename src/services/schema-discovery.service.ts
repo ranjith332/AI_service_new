@@ -9,7 +9,7 @@ export interface DiscoveredColumn {
 
 export interface DiscoveredTable {
   name: string;
-  tenantColumn: string;
+  tenant: string;
   columns: DiscoveredColumn[];
 }
 
@@ -76,7 +76,7 @@ export class SchemaDiscoveryService {
 
       schema[tableName] = {
         name: tableName,
-        tenantColumn: "tenant_id",
+        tenant: "tenant_id",
         columns
       };
     }
