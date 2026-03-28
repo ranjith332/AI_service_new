@@ -20,6 +20,8 @@ import { SchemaDiscoveryService } from "./services/schema-discovery.service.ts";
 import { SqlBuilderService } from "./services/sql-builder.service.ts";
 import { TokenBillingService } from "./services/token-billing.service.ts";
 import { VectorSearchService } from "./services/vector-search.service.ts";
+import { SessionService } from "./services/session.service.ts";
+import { BookingService } from "./services/booking.service.ts";
 import { AppError } from "./utils/errors.ts";
 import { logger } from "./utils/logger.ts";
 import { InMemoryRateLimiter } from "./utils/rate-limiter.ts";
@@ -37,6 +39,8 @@ export async function createApp() {
   const tokenBillingService = new TokenBillingService(db, cashfreeService);
   const schemaDiscoveryService = new SchemaDiscoveryService(db);
   const dynamicSqlPlannerService = new DynamicSqlPlannerService(llm);
+  const sessionService = new SessionService();
+  const bookingService = new BookingService(db, schemaMapping);
 
   const aiQueryService = new AiQueryService(
     schemaMapping,
@@ -48,7 +52,9 @@ export async function createApp() {
     new DbExecutorService(db),
     new VectorSearchService(llm, qdrant),
     new ResponseGeneratorService(llm),
-    cache
+    cache,
+    sessionService,
+    bookingService
   );
 
   const app = new Elysia()

@@ -13,18 +13,22 @@ import { ResponseGeneratorService } from "./response-generator.service.ts";
 import { QueryCacheService } from "./cache.service.ts";
 import { SchemaDiscoveryService } from "./schema-discovery.service.ts";
 import { DynamicSqlPlannerService } from "./dynamic-sql-planner.service.ts";
+import { SessionService } from "./session.service.ts";
+import { BookingService } from "./booking.service.ts";
 import { UnsupportedQueryError } from "../utils/errors.ts";
 import { logger } from "../utils/logger.ts";
 
 interface PipelineContext {
   tenantId: string;
   userQuery: string;
+  sessionId?: string;
   intent?: QueryIntent;
   strategy?: ExecutionStrategy;
   sqlRows?: QueryResultRow[];
   vectorRows?: unknown[];
   provider?: "openai" | "nvidia_qwen";
   sqlMode?: "mapped" | "dynamic";
+  answer?: string;
 }
 
 export class AiQueryService {
@@ -38,7 +42,9 @@ export class AiQueryService {
     private readonly dbExecutor: DbExecutorService,
     private readonly vectorSearch: VectorSearchService,
     private readonly responseGenerator: ResponseGeneratorService,
-    private readonly cache: QueryCacheService | null
+    private readonly cache: QueryCacheService | null,
+    private readonly sessionService: SessionService,
+    private readonly bookingService: BookingService
   ) {}
 
   async execute(body: QueryBody) {
@@ -54,9 +60,20 @@ export class AiQueryService {
       };
     }
 
-    const pipeline = RunnableSequence.from<PipelineContext, PipelineContext & { answer: string }>([
+    const pipeline = RunnableSequence.from<PipelineContext, any>([
       RunnableLambda.from(async (input: PipelineContext) => {
         const classified = await this.intentService.classify(input.tenantId, input.userQuery);
+        
+        // Handle Clarification
+        if (classified.intent.operation === "book" && classified.intent.needsClarification) {
+           return {
+             ...input,
+             intent: classified.intent,
+             provider: classified.provider,
+             answer: classified.intent.clarificationMessage ?? "I need more information to book your appointment. What is your name?"
+           };
+        }
+
         return {
           ...input,
           intent: classified.intent,
@@ -64,7 +81,33 @@ export class AiQueryService {
         };
       }),
       RunnableLambda.from(async (input: PipelineContext) => {
-        const plan = this.planner.plan(input.intent!);
+        if ((input as any).answer) return input; // Short-circuit if clarification sent
+
+        const intent = input.intent!;
+        
+        // Handle Booking Execution
+        if (intent.operation === "book") {
+            const details = intent.bookingDetails;
+            if (details.name && details.doctor && details.session !== "none") {
+                const booking = await this.bookingService.validateAndBook({
+                    tenantId: input.tenantId,
+                    name: details.name!,
+                    doctorName: details.doctor!,
+                    session: details.session as any,
+                    token: details.token ?? undefined,
+                    date: (details.appointmentDate ?? new Date().toISOString().split('T')[0]) as string
+                });
+
+                return {
+                    ...input,
+                    answer: booking.message,
+                    sqlRows: booking.appointmentId ? [{ id: booking.appointmentId }] : [],
+                    strategy: "sql" as ExecutionStrategy
+                };
+            }
+        }
+
+        const plan = this.planner.plan(intent);
 
         const [sqlData, vectorRows] = await Promise.all([
           plan.runSql
@@ -88,9 +131,11 @@ export class AiQueryService {
         };
       }),
       RunnableLambda.from(async (input: PipelineContext) => {
+        if ((input as any).answer) return input; // Preserving clarify or booking response
+
         const generated = await this.responseGenerator.generate({
           tenantId: input.tenantId,
-          userQuery: input.userQuery,
+          userQuery: input.userQuery || "no query provided",
           intent: input.intent!,
           sqlRows: input.sqlRows ?? [],
           vectorRows: input.vectorRows ?? []
@@ -129,6 +174,18 @@ export class AiQueryService {
         cached: false
       }
     };
+
+    if (result.intent?.operation === "book") {
+      return {
+        intent: "book_appointment",
+        patient_name: result.intent.bookingDetails?.name || null,
+        doctor_name: result.intent.bookingDetails?.doctor || null,
+        session: result.intent.bookingDetails?.session || "none",
+        token_number: result.intent.bookingDetails?.token || null,
+        answer: result.answer,
+        tenant_id: body.tenant_id
+      };
+    }
 
     if (this.cache) {
       this.cache.set(cacheKey, response);

@@ -46,7 +46,8 @@ const envSchema = z.object({
   CASHFREE_RETURN_URL: z.string().url().optional(),
   CASHFREE_NOTIFY_URL: z.string().url().optional(),
   SCHEMA_MAPPING_PATH: z.string().min(1).default("./config/schema-mapping.local.json"),
-  INGESTION_STATE_PATH: z.string().min(1).default("./config/ingestion-state.local.json")
+  INGESTION_STATE_PATH: z.string().min(1).default("./config/ingestion-state.local.json"),
+  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info")
 });
 
 const parsed = envSchema.safeParse(process.env);

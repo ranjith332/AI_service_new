@@ -4,6 +4,7 @@ import type { DynamicSqlPlan, QueryIntent } from "./query-schemas.ts";
 import type { DiscoveredSchema } from "./schema-discovery.service.ts";
 import { UnsupportedQueryError } from "../utils/errors.ts";
 import { resolveTimeRange } from "../utils/time.ts";
+import { logger } from "../utils/logger.ts";
 
 interface BuildParams {
   tenantId: string;
@@ -34,6 +35,14 @@ export class SqlBuilderService {
 
     if (intent.target === "medicines") {
       return this.buildMedicinesQuery(params);
+    }
+
+    if (intent.target === "dependents" || intent.target === "dependent") {
+      return this.buildDependentsQuery(params);
+    }
+
+    if (intent.target === "schedules" || intent.target === "schedule" || intent.target === "scheduledays" || intent.target === "scheduleday") {
+      return this.buildSchedulesQuery(params);
     }
 
     throw new UnsupportedQueryError();
@@ -135,8 +144,11 @@ export class SqlBuilderService {
       })
       .join("\n");
 
-    const whereParts = [`${baseAlias}.${quote(baseTable.tenant)} = ?`];
-    values.push(params.tenantId);
+    const whereParts: string[] = [];
+    if (baseTable.tenant) {
+      whereParts.push(`${baseAlias}.${quote(baseTable.tenant)} = ?`);
+      values.push(params.tenantId);
+    }
 
     for (const filter of params.plan.filters) {
       assertAllowedTableReference(filter.table);
@@ -218,7 +230,7 @@ export class SqlBuilderService {
 
     values.push(Math.min(params.plan.limit, 100));
 
-    return {
+    const result: SqlQuery = {
       text: `
         SELECT ${params.plan.distinct ? "DISTINCT " : ""}${selectSql}
         FROM ${quote(baseTable.name)} ${baseAlias}
@@ -231,6 +243,13 @@ export class SqlBuilderService {
       values,
       description: `dynamic_${params.plan.baseTable}`
     };
+
+    // Safety check: ensure at least one table has been filtered by tenant
+    if (!whereParts.some((p) => p.includes(" = ?") || p.includes(" IN ("))) {
+      logger.warn({ plan: params.plan }, "Query generated without explicit tenant filter on base table");
+    }
+
+    return result;
   }
 
   private buildAppointmentsQuery({ tenantId, intent, schema, timeZone }: BuildParams): SqlQuery {
@@ -286,12 +305,14 @@ export class SqlBuilderService {
 
   private buildPatientsQuery({ tenantId, intent, schema }: BuildParams): SqlQuery {
     const patients = schema.patients;
+    const users = schema.users;
     const values: unknown[] = [tenantId];
     const where = [`p.${patients.tenant} = ?`];
 
     if (intent.patientName) {
-      where.push(`LOWER(p.${patients.firstName}) LIKE ?`);
-      values.push(`%${intent.patientName.toLowerCase()}%`);
+      where.push(`(LOWER(p.${patients.firstName}) LIKE ? OR LOWER(u.${users.firstName}) LIKE ? OR LOWER(p.${patients.lastName}) LIKE ? OR LOWER(u.${users.lastName}) LIKE ?)`);
+      const namePattern = `%${intent.patientName.toLowerCase()}%`;
+      values.push(namePattern, namePattern, namePattern, namePattern);
     }
 
     values.push(intent.limit);
@@ -300,12 +321,13 @@ export class SqlBuilderService {
       text: `
         SELECT DISTINCT
           p.${patients.id} AS patient_id,
-          CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName}) AS patient_name,
+          COALESCE(CONCAT(u.${users.firstName}, ' ', u.${users.lastName}), CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName})) AS patient_name,
           p.${patients.gender} AS gender,
           p.${patients.dob} AS date_of_birth
         FROM ${patients.table} p
+        LEFT JOIN ${users.table} u ON u.${users.id} = p.${patients.user}
         WHERE ${where.join(" AND ")}
-        ORDER BY p.${patients.firstName} ASC
+        ORDER BY patient_name ASC
         LIMIT ?
       `,
       values,
@@ -353,17 +375,20 @@ export class SqlBuilderService {
     const prescriptions = schema.prescriptions;
     const patients = schema.patients;
     const doctors = schema.doctors;
+    const users = schema.users;
     const values: unknown[] = [tenantId];
     const where = [`rx.${prescriptions.tenant} = ?`];
 
     if (intent.patientName) {
-      where.push(`LOWER(p.${patients.firstName}) LIKE ?`);
-      values.push(`%${intent.patientName.toLowerCase()}%`);
+      where.push(`(LOWER(p.${patients.firstName}) LIKE ? OR LOWER(pu.${users.firstName}) LIKE ?)`);
+      const namePattern = `%${intent.patientName.toLowerCase()}%`;
+      values.push(namePattern, namePattern);
     }
 
     if (intent.doctorName) {
-      where.push(`LOWER(d.${doctors.firstName}) LIKE ?`);
-      values.push(`%${intent.doctorName.toLowerCase()}%`);
+      where.push(`(LOWER(d.${doctors.firstName}) LIKE ? OR LOWER(du.${users.firstName}) LIKE ?)`);
+      const namePattern = `%${intent.doctorName.toLowerCase()}%`;
+      values.push(namePattern, namePattern);
     }
 
     values.push(intent.limit);
@@ -374,15 +399,17 @@ export class SqlBuilderService {
           rx.${prescriptions.id} AS prescription_id,
           rx.${prescriptions.status} AS status,
           rx.${prescriptions.createdAt} AS prescribed_at,
-          CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName}) AS patient_name,
-          CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName}) AS doctor_name
+          COALESCE(CONCAT(pu.${users.firstName}, ' ', pu.${users.lastName}), CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName})) AS patient_name,
+          COALESCE(CONCAT(du.${users.firstName}, ' ', du.${users.lastName}), CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName})) AS doctor_name
         FROM ${prescriptions.table} rx
         LEFT JOIN ${patients.table} p
           ON p.${patients.id} = rx.${prescriptions.patient}
          AND p.${patients.tenant} = rx.${prescriptions.tenant}
+        LEFT JOIN ${users.table} pu ON pu.${users.id} = p.${patients.user}
         LEFT JOIN ${doctors.table} d
           ON d.${doctors.id} = rx.${prescriptions.doctor}
          AND d.${doctors.tenant} = rx.${prescriptions.tenant}
+        LEFT JOIN ${users.table} du ON du.${users.id} = d.${doctors.user}
         WHERE ${where.join(" AND ")}
         ORDER BY rx.${prescriptions.updatedAt} DESC
         LIMIT ?
@@ -418,6 +445,74 @@ export class SqlBuilderService {
       `,
       values,
       description: "list_medicines"
+    };
+  }
+
+  private buildDependentsQuery({ tenantId, intent, schema }: BuildParams): SqlQuery {
+    const dependents = schema.dependents;
+    const patients = schema.patients;
+    const values: unknown[] = [tenantId];
+    // dependents don't have tenant_id, so we join with patients
+    const where = [`p.${patients.tenant} = ?`];
+
+    if (intent.patientName) {
+      where.push(`(LOWER(p.${patients.firstName}) LIKE ? OR LOWER(d.${dependents.firstName}) LIKE ?)`);
+      values.push(`%${intent.patientName.toLowerCase()}%`, `%${intent.patientName.toLowerCase()}%`);
+    }
+
+    values.push(intent.limit);
+
+    return {
+      text: `
+        SELECT
+          d.${dependents.id} AS dependent_id,
+          CONCAT(d.${dependents.firstName}, ' ', d.${dependents.lastName}) AS dependent_name,
+          d.${dependents.relation} AS relation,
+          d.${dependents.age} AS age,
+          CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName}) AS patient_name
+        FROM ${dependents.table} d
+        INNER JOIN ${patients.table} p ON p.${patients.id} = d.${dependents.patient}
+        WHERE ${where.join(" AND ")}
+        ORDER BY d.${dependents.firstName} ASC
+        LIMIT ?
+      `,
+      values,
+      description: "list_dependents"
+    };
+  }
+
+  private buildSchedulesQuery({ tenantId, intent, schema }: BuildParams): SqlQuery {
+    const schedules = schema.schedules;
+    const scheduleDays = schema.scheduleDays;
+    const doctors = schema.doctors;
+    const values: unknown[] = [tenantId];
+    const where = [`s.${schedules.tenant} = ?`];
+
+    if (intent.doctorName) {
+      where.push(`LOWER(dr.${doctors.firstName}) LIKE ?`);
+      values.push(`%${intent.doctorName.toLowerCase()}%`);
+    }
+
+    values.push(intent.limit);
+
+    return {
+      text: `
+        SELECT
+          s.${schedules.id} AS schedule_id,
+          CONCAT(dr.${doctors.firstName}, ' ', dr.${doctors.lastName}) AS doctor_name,
+          sd.${scheduleDays.availableOn} AS day,
+          sd.${scheduleDays.availableFrom} AS start_time,
+          sd.${scheduleDays.availableTo} AS end_time,
+          sd.${scheduleDays.maxTokens} AS max_tokens
+        FROM ${schedules.table} s
+        INNER JOIN ${scheduleDays.table} sd ON sd.${scheduleDays.schedule} = s.${schedules.id}
+        INNER JOIN ${doctors.table} dr ON dr.${doctors.id} = s.${schedules.doctor}
+        WHERE ${where.join(" AND ")}
+        ORDER BY dr.${doctors.firstName} ASC, sd.${scheduleDays.id} ASC
+        LIMIT ?
+      `,
+      values,
+      description: "list_schedules"
     };
   }
 }
