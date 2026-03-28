@@ -19,11 +19,13 @@ const envSchema = z.object({
   NVIDIA_QWEN_API_KEY: z.string().optional(),
   NVIDIA_QWEN_BASE_URL: z.string().url().default("https://integrate.api.nvidia.com/v1"),
   NVIDIA_QWEN_MODEL: z.string().optional(),
+  NVIDIA_INTENT_MODEL: z.string().optional(),
   NVIDIA_EMBEDDING_MODEL: z.string().optional(),
   LLM_TIMEOUT_MS: z.coerce.number().int().min(1).default(30000),
   QDRANT_URL: z.string().min(1, "QDRANT_URL is required"),
   QDRANT_API_KEY: z.string().optional(),
   QDRANT_COLLECTION: z.string().min(1).default("doctor_healix_healthcare"),
+  QDRANT_VECTOR_NAME: z.string().optional(),
   VECTOR_SIZE: z.coerce.number().int().positive().default(3072),
   VECTOR_RESULT_LIMIT: z.coerce.number().int().positive().default(5),
   ENABLE_QUERY_CACHE: z

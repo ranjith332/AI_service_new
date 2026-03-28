@@ -14,31 +14,45 @@ export class QueryPlannerService {
       throw new UnsupportedQueryError("The request was too ambiguous to execute safely.");
     }
 
-    const vectorTables =
-      intent.target === "lab_reports" || intent.target === "pathology_reports" || intent.target === "prescriptions"
-        ? [intent.target]
-        : ["lab_reports", "pathology_reports", "prescriptions", "medical_records"];
+  const targetMapping: Record<string, string> = {
+    appointment: "appointments",
+    patient: "patients",
+    prescription: "prescriptions",
+    doctor: "doctors",
+    medicine: "medicines",
+    user: "users"
+  };
 
-    const runSql =
-      intent.needsSql ||
-      intent.target === "unknown" ||
-      ["appointments", "patients", "billing", "doctors"].includes(intent.target) ||
-      intent.operation === "latest" ||
-      intent.metric !== "none";
+  const normalizedTarget = targetMapping[intent.target] || intent.target;
 
-    const runVector =
-      intent.needsVector ||
-      intent.operation === "semantic_lookup" ||
-      (["lab_reports", "pathology_reports", "prescriptions", "medical_records"].includes(intent.target) &&
-        intent.operation === "summary");
+  const vectorTables =
+    normalizedTarget === "prescriptions" ||
+    normalizedTarget === "medicines" ||
+    normalizedTarget === "doctors" ||
+    normalizedTarget === "patients"
+      ? [normalizedTarget]
+      : ["patients", "prescriptions", "medicines", "doctors"];
 
-    const strategy: ExecutionStrategy = runSql && runVector ? "hybrid" : runVector ? "vector" : "sql";
+  const runSql =
+    intent.needsSql ||
+    normalizedTarget === "unknown" ||
+    ["appointments", "patients", "doctors", "medicines", "users"].includes(normalizedTarget) ||
+    intent.operation === "latest" ||
+    intent.metric !== "none";
 
-    return {
-      strategy,
-      runSql,
-      runVector,
-      vectorTables
-    };
+  const runVector =
+    intent.needsVector ||
+    intent.operation === "semantic_lookup" ||
+    ["prescriptions", "medicines", "doctors", "patients"].includes(normalizedTarget) ||
+    normalizedTarget === "unknown";
+
+  const strategy: ExecutionStrategy = runSql && runVector ? "hybrid" : runVector ? "vector" : "sql";
+
+  return {
+    strategy,
+    runSql,
+    runVector,
+    vectorTables
+  };
   }
 }

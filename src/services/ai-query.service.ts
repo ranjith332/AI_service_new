@@ -14,6 +14,7 @@ import { QueryCacheService } from "./cache.service.ts";
 import { SchemaDiscoveryService } from "./schema-discovery.service.ts";
 import { DynamicSqlPlannerService } from "./dynamic-sql-planner.service.ts";
 import { UnsupportedQueryError } from "../utils/errors.ts";
+import { logger } from "../utils/logger.ts";
 
 interface PipelineContext {
   tenantId: string;
@@ -65,49 +66,25 @@ export class AiQueryService {
       RunnableLambda.from(async (input: PipelineContext) => {
         const plan = this.planner.plan(input.intent!);
 
-        let sqlRows: QueryResultRow[] = [];
-        let vectorRows: unknown[] = [];
-        let sqlMode: "mapped" | "dynamic" | undefined;
-
-        if (plan.runSql) {
-          try {
-            const query =
-              input.intent!.target === "unknown"
-                ? await this.buildDynamicQuery(input.tenantId, input.userQuery)
-                : this.sqlBuilder.build({
-                    tenantId: input.tenantId,
-                    intent: input.intent!,
-                    schema: this.schema,
-                    timeZone: env.APP_TIMEZONE
-                  });
-
-            sqlRows = (await this.dbExecutor.execute(query)).rows;
-            sqlMode = input.intent!.target === "unknown" ? "dynamic" : "mapped";
-          } catch (error) {
-            if (!(error instanceof UnsupportedQueryError)) {
-              throw error;
-            }
-
-            const query = await this.buildDynamicQuery(input.tenantId, input.userQuery);
-            sqlRows = (await this.dbExecutor.execute(query)).rows;
-            sqlMode = "dynamic";
-          }
-        }
-
-        if (plan.runVector) {
-          vectorRows = await this.vectorSearch.search({
-            tenantId: input.tenantId,
-            query: input.userQuery,
-            tableNames: plan.vectorTables
-          });
-        }
+        const [sqlData, vectorRows] = await Promise.all([
+          plan.runSql
+            ? this.executeSqlPlan(input, plan)
+            : Promise.resolve({ rows: [] as QueryResultRow[], mode: undefined as "mapped" | "dynamic" | undefined }),
+          plan.runVector
+            ? this.vectorSearch.search({
+                tenantId: input.tenantId,
+                query: input.userQuery,
+                tableNames: plan.vectorTables
+              })
+            : Promise.resolve([] as unknown[])
+        ]);
 
         return {
           ...input,
           strategy: plan.strategy,
-          sqlRows,
+          sqlRows: sqlData.rows,
           vectorRows,
-          sqlMode
+          sqlMode: sqlData.mode
         };
       }),
       RunnableLambda.from(async (input: PipelineContext) => {
@@ -158,6 +135,43 @@ export class AiQueryService {
     }
 
     return response;
+  }
+
+  private async executeSqlPlan(
+    input: PipelineContext,
+    plan: { runSql: boolean; runVector: boolean; strategy: ExecutionStrategy; vectorTables: string[] }
+  ): Promise<{ rows: QueryResultRow[]; mode: "mapped" | "dynamic" | undefined }> {
+    try {
+      const query =
+        input.intent!.target === "unknown"
+          ? await this.buildDynamicQuery(input.tenantId, input.userQuery)
+          : this.sqlBuilder.build({
+              tenantId: input.tenantId,
+              intent: input.intent!,
+              schema: this.schema,
+              timeZone: env.APP_TIMEZONE
+            });
+
+      logger.info({ query: query.text, values: query.values }, "Executing generated SQL query");
+      const result = await this.dbExecutor.execute(query);
+      return {
+        rows: result.rows,
+        mode: input.intent!.target === "unknown" ? "dynamic" : "mapped"
+      };
+    } catch (error) {
+      logger.error({ error: error instanceof Error ? error.message : error }, "SQL query failed, attempting dynamic fallback");
+      if (!(error instanceof UnsupportedQueryError)) {
+        throw error;
+      }
+
+      const query = await this.buildDynamicQuery(input.tenantId, input.userQuery);
+      logger.info({ query: query.text, values: query.values }, "Executing dynamic fallback SQL query");
+      const result = await this.dbExecutor.execute(query);
+      return {
+        rows: result.rows,
+        mode: "dynamic"
+      };
+    }
   }
 
   private async buildDynamicQuery(tenantId: string, userQuery: string) {

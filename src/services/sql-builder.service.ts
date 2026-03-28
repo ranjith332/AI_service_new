@@ -24,24 +24,16 @@ export class SqlBuilderService {
       return this.buildPatientsQuery(params);
     }
 
-    if (intent.target === "lab_reports") {
-      return this.buildLatestReportQuery(params, "lab_reports");
-    }
-
-    if (intent.target === "pathology_reports") {
-      return this.buildLatestReportQuery(params, "pathology_reports");
-    }
-
-    if (intent.target === "billing" || intent.metric === "revenue") {
-      return this.buildRevenueQuery(params);
-    }
-
     if (intent.target === "doctors" || intent.metric === "doctor_with_most_appointments") {
       return this.buildDoctorRankingQuery(params);
     }
 
-    if (intent.target === "prescriptions") {
+    if (intent.target === "prescriptions" || intent.target === "prescription") {
       return this.buildPrescriptionLookupQuery(params);
+    }
+
+    if (intent.target === "medicines") {
+      return this.buildMedicinesQuery(params);
     }
 
     throw new UnsupportedQueryError();
@@ -136,14 +128,14 @@ export class SqlBuilderService {
           return `${leftAlias}.${quote(condition.leftColumn)} = ${rightAlias}.${quote(condition.rightColumn)}`;
         });
 
-        predicates.push(`${joinAlias}.${quote(table.tenantColumn)} = ?`);
+        predicates.push(`${joinAlias}.${quote(table.tenant)} = ?`);
         values.push(params.tenantId);
 
         return `${join.joinType.toUpperCase()} JOIN ${quote(table.name)} ${joinAlias} ON ${predicates.join(" AND ")}`;
       })
       .join("\n");
 
-    const whereParts = [`${baseAlias}.${quote(baseTable.tenantColumn)} = ?`];
+    const whereParts = [`${baseAlias}.${quote(baseTable.tenant)} = ?`];
     values.push(params.tenantId);
 
     for (const filter of params.plan.filters) {
@@ -248,21 +240,21 @@ export class SqlBuilderService {
     const range = resolveTimeRange(intent.timeRange, timeZone);
 
     const values: unknown[] = [tenantId];
-    const where = [`a.${appointments.tenantColumn} = ?`];
+    const where = [`a.${appointments.tenant} = ?`];
 
     if (range.start && range.end) {
-      where.push(`a.${appointments.scheduledAtColumn} >= ?`);
-      where.push(`a.${appointments.scheduledAtColumn} < ?`);
+      where.push(`a.${appointments.scheduledAt} >= ?`);
+      where.push(`a.${appointments.scheduledAt} < ?`);
       values.push(range.start, range.end);
     }
 
     if (intent.doctorName) {
-      where.push(`LOWER(d.${doctors.nameColumn}) LIKE ?`);
+      where.push(`LOWER(d.${doctors.firstName}) LIKE ?`);
       values.push(`%${intent.doctorName.toLowerCase()}%`);
     }
 
     if (intent.patientName) {
-      where.push(`LOWER(p.${patients.nameColumn}) LIKE ?`);
+      where.push(`LOWER(a.${appointments.patientName}) LIKE ?`);
       values.push(`%${intent.patientName.toLowerCase()}%`);
     }
 
@@ -271,20 +263,20 @@ export class SqlBuilderService {
     return {
       text: `
         SELECT
-          a.${appointments.idColumn} AS appointment_id,
-          a.${appointments.scheduledAtColumn} AS scheduled_at,
-          a.${appointments.statusColumn} AS status,
-          p.${patients.nameColumn} AS patient_name,
-          d.${doctors.nameColumn} AS doctor_name
+          a.${appointments.id} AS appointment_id,
+          a.${appointments.scheduledAt} AS scheduled_at,
+          a.${appointments.isCompleted} AS status,
+          a.${appointments.patientName} AS patient_name,
+          CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName}) AS doctor_name
         FROM ${appointments.table} a
         LEFT JOIN ${patients.table} p
-          ON p.${patients.idColumn} = a.${appointments.patientIdColumn}
-         AND p.${patients.tenantColumn} = a.${appointments.tenantColumn}
+          ON p.${patients.id} = a.${appointments.patient}
+         AND p.${patients.tenant} = a.${appointments.tenant}
         LEFT JOIN ${doctors.table} d
-          ON d.${doctors.idColumn} = a.${appointments.doctorIdColumn}
-         AND d.${doctors.tenantColumn} = a.${appointments.tenantColumn}
+          ON d.${doctors.id} = a.${appointments.doctor}
+         AND d.${doctors.tenant} = a.${appointments.tenant}
         WHERE ${where.join(" AND ")}
-        ORDER BY a.${appointments.scheduledAtColumn} ASC
+        ORDER BY a.${appointments.scheduledAt} ASC
         LIMIT ?
       `,
       values,
@@ -294,24 +286,11 @@ export class SqlBuilderService {
 
   private buildPatientsQuery({ tenantId, intent, schema }: BuildParams): SqlQuery {
     const patients = schema.patients;
-    const medicalRecords = schema.medical_records;
     const values: unknown[] = [tenantId];
-    const where = [`p.${patients.tenantColumn} = ?`];
-
-    if (intent.condition) {
-      const likeValue = `%${intent.condition.toLowerCase()}%`;
-      where.push(
-        `(
-          LOWER(COALESCE(p.${patients.conditionColumn}, '')) LIKE ?
-          OR LOWER(COALESCE(mr.${medicalRecords.conditionsColumn}, '')) LIKE ?
-          OR LOWER(COALESCE(mr.${medicalRecords.diagnosisColumn}, '')) LIKE ?
-        )`
-      );
-      values.push(likeValue, likeValue, likeValue);
-    }
+    const where = [`p.${patients.tenant} = ?`];
 
     if (intent.patientName) {
-      where.push(`LOWER(p.${patients.nameColumn}) LIKE ?`);
+      where.push(`LOWER(p.${patients.firstName}) LIKE ?`);
       values.push(`%${intent.patientName.toLowerCase()}%`);
     }
 
@@ -320,16 +299,13 @@ export class SqlBuilderService {
     return {
       text: `
         SELECT DISTINCT
-          p.${patients.idColumn} AS patient_id,
-          p.${patients.nameColumn} AS patient_name,
-          p.${patients.genderColumn} AS gender,
-          p.${patients.dobColumn} AS date_of_birth
+          p.${patients.id} AS patient_id,
+          CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName}) AS patient_name,
+          p.${patients.gender} AS gender,
+          p.${patients.dob} AS date_of_birth
         FROM ${patients.table} p
-        LEFT JOIN ${medicalRecords.table} mr
-          ON mr.${medicalRecords.patientIdColumn} = p.${patients.idColumn}
-         AND mr.${medicalRecords.tenantColumn} = p.${patients.tenantColumn}
         WHERE ${where.join(" AND ")}
-        ORDER BY p.${patients.nameColumn} ASC
+        ORDER BY p.${patients.firstName} ASC
         LIMIT ?
       `,
       values,
@@ -337,77 +313,17 @@ export class SqlBuilderService {
     };
   }
 
-  private buildLatestReportQuery(
-    { tenantId, intent, schema }: BuildParams,
-    reportType: "lab_reports" | "pathology_reports"
-  ): SqlQuery {
-    const reports = schema[reportType];
-    const patients = schema.patients;
-
-    if (!intent.patientName) {
-      throw new UnsupportedQueryError(`A patient name is required for latest ${reportType.replace("_", " ")} queries.`);
-    }
-
-    return {
-      text: `
-        SELECT
-          r.${reports.idColumn} AS report_id,
-          r.${reports.nameColumn} AS report_name,
-          r.${reports.summaryColumn} AS report_summary,
-          r.${reports.textColumn} AS report_text,
-          r.${reports.reportedAtColumn} AS reported_at,
-          p.${patients.nameColumn} AS patient_name
-        FROM ${reports.table} r
-        INNER JOIN ${patients.table} p
-          ON p.${patients.idColumn} = r.${reports.patientIdColumn}
-         AND p.${patients.tenantColumn} = r.${reports.tenantColumn}
-        WHERE r.${reports.tenantColumn} = ?
-          AND LOWER(p.${patients.nameColumn}) LIKE ?
-        ORDER BY r.${reports.reportedAtColumn} DESC
-        LIMIT 1
-      `,
-      values: [tenantId, `%${intent.patientName.toLowerCase()}%`],
-      description: `latest_${reportType}`
-    };
-  }
-
-  private buildRevenueQuery({ tenantId, intent, schema, timeZone }: BuildParams): SqlQuery {
-    const billing = schema.billing;
-    const range = resolveTimeRange(intent.timeRange, timeZone);
-    const where = [`b.${billing.tenantColumn} = ?`];
-    const values: unknown[] = [tenantId];
-
-    if (range.start && range.end) {
-      where.push(`b.${billing.billedAtColumn} >= ?`);
-      where.push(`b.${billing.billedAtColumn} < ?`);
-      values.push(range.start, range.end);
-    }
-
-    where.push(`LOWER(COALESCE(b.${billing.statusColumn}, '')) = ?`);
-    values.push("paid");
-
-    return {
-      text: `
-        SELECT
-          COALESCE(SUM(b.${billing.amountColumn}), 0) AS revenue
-        FROM ${billing.table} b
-        WHERE ${where.join(" AND ")}
-      `,
-      values,
-      description: "billing_revenue"
-    };
-  }
 
   private buildDoctorRankingQuery({ tenantId, intent, schema, timeZone }: BuildParams): SqlQuery {
     const appointments = schema.appointments;
     const doctors = schema.doctors;
     const range = resolveTimeRange(intent.timeRange, timeZone);
-    const where = [`a.${appointments.tenantColumn} = ?`];
+    const where = [`a.${appointments.tenant} = ?`];
     const values: unknown[] = [tenantId];
 
     if (range.start && range.end) {
-      where.push(`a.${appointments.scheduledAtColumn} >= ?`);
-      where.push(`a.${appointments.scheduledAtColumn} < ?`);
+      where.push(`a.${appointments.scheduledAt} >= ?`);
+      where.push(`a.${appointments.scheduledAt} < ?`);
       values.push(range.start, range.end);
     }
 
@@ -416,16 +332,16 @@ export class SqlBuilderService {
     return {
       text: `
         SELECT
-          d.${doctors.idColumn} AS doctor_id,
-          d.${doctors.nameColumn} AS doctor_name,
+          d.${doctors.id} AS doctor_id,
+          CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName}) AS doctor_name,
           COUNT(*) AS appointment_count
         FROM ${appointments.table} a
         INNER JOIN ${doctors.table} d
-          ON d.${doctors.idColumn} = a.${appointments.doctorIdColumn}
-         AND d.${doctors.tenantColumn} = a.${appointments.tenantColumn}
+          ON d.${doctors.id} = a.${appointments.doctor}
+         AND d.${doctors.tenant} = a.${appointments.tenant}
         WHERE ${where.join(" AND ")}
-        GROUP BY d.${doctors.idColumn}, d.${doctors.nameColumn}
-        ORDER BY appointment_count DESC, d.${doctors.nameColumn} ASC
+        GROUP BY d.${doctors.id}, d.${doctors.firstName}, d.${doctors.lastName}
+        ORDER BY appointment_count DESC, d.${doctors.firstName} ASC
         LIMIT ?
       `,
       values,
@@ -438,26 +354,16 @@ export class SqlBuilderService {
     const patients = schema.patients;
     const doctors = schema.doctors;
     const values: unknown[] = [tenantId];
-    const where = [`rx.${prescriptions.tenantColumn} = ?`];
+    const where = [`rx.${prescriptions.tenant} = ?`];
 
     if (intent.patientName) {
-      where.push(`LOWER(p.${patients.nameColumn}) LIKE ?`);
+      where.push(`LOWER(p.${patients.firstName}) LIKE ?`);
       values.push(`%${intent.patientName.toLowerCase()}%`);
     }
 
     if (intent.doctorName) {
-      where.push(`LOWER(d.${doctors.nameColumn}) LIKE ?`);
+      where.push(`LOWER(d.${doctors.firstName}) LIKE ?`);
       values.push(`%${intent.doctorName.toLowerCase()}%`);
-    }
-
-    if (intent.condition) {
-      where.push(
-        `(
-          LOWER(COALESCE(rx.${prescriptions.medicationColumn}, '')) LIKE ?
-          OR LOWER(COALESCE(rx.${prescriptions.instructionsColumn}, '')) LIKE ?
-        )`
-      );
-      values.push(`%${intent.condition.toLowerCase()}%`, `%${intent.condition.toLowerCase()}%`);
     }
 
     values.push(intent.limit);
@@ -465,26 +371,53 @@ export class SqlBuilderService {
     return {
       text: `
         SELECT
-          rx.${prescriptions.idColumn} AS prescription_id,
-          rx.${prescriptions.medicationColumn} AS medication_name,
-          rx.${prescriptions.dosageColumn} AS dosage,
-          rx.${prescriptions.instructionsColumn} AS instructions,
-          rx.${prescriptions.prescribedAtColumn} AS prescribed_at,
-          p.${patients.nameColumn} AS patient_name,
-          d.${doctors.nameColumn} AS doctor_name
+          rx.${prescriptions.id} AS prescription_id,
+          rx.${prescriptions.status} AS status,
+          rx.${prescriptions.createdAt} AS prescribed_at,
+          CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName}) AS patient_name,
+          CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName}) AS doctor_name
         FROM ${prescriptions.table} rx
         LEFT JOIN ${patients.table} p
-          ON p.${patients.idColumn} = rx.${prescriptions.patientIdColumn}
-         AND p.${patients.tenantColumn} = rx.${prescriptions.tenantColumn}
+          ON p.${patients.id} = rx.${prescriptions.patient}
+         AND p.${patients.tenant} = rx.${prescriptions.tenant}
         LEFT JOIN ${doctors.table} d
-          ON d.${doctors.idColumn} = rx.${prescriptions.doctorIdColumn}
-         AND d.${doctors.tenantColumn} = rx.${prescriptions.tenantColumn}
+          ON d.${doctors.id} = rx.${prescriptions.doctor}
+         AND d.${doctors.tenant} = rx.${prescriptions.tenant}
         WHERE ${where.join(" AND ")}
-        ORDER BY rx.${prescriptions.prescribedAtColumn} DESC
+        ORDER BY rx.${prescriptions.updatedAt} DESC
         LIMIT ?
       `,
       values,
       description: "prescription_lookup"
+    };
+  }
+
+  private buildMedicinesQuery({ tenantId, intent, schema }: BuildParams): SqlQuery {
+    const medicines = schema.medicines;
+    const values: unknown[] = [tenantId];
+    const where = [`m.${medicines.tenant} = ?`];
+
+    if (intent.condition) {
+      where.push(`LOWER(m.${medicines.name}) LIKE ?`);
+      values.push(`%${intent.condition.toLowerCase()}%`);
+    }
+
+    values.push(intent.limit);
+
+    return {
+      text: `
+        SELECT
+          m.${medicines.id} AS medicine_id,
+          m.${medicines.name} AS medicine_name,
+          m.${medicines.sellingPrice} AS price,
+          m.${medicines.quantity} AS available_quantity
+        FROM ${medicines.table} m
+        WHERE ${where.join(" AND ")}
+        ORDER BY m.${medicines.name} ASC
+        LIMIT ?
+      `,
+      values,
+      description: "list_medicines"
     };
   }
 }
