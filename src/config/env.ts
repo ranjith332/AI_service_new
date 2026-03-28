@@ -19,6 +19,7 @@ const envSchema = z.object({
   NVIDIA_QWEN_API_KEY: z.string().optional(),
   NVIDIA_QWEN_BASE_URL: z.string().url().default("https://integrate.api.nvidia.com/v1"),
   NVIDIA_QWEN_MODEL: z.string().optional(),
+  NVIDIA_INTENT_MODEL: z.string().optional(),
   NVIDIA_EMBEDDING_MODEL: z.string().optional(),
   LLM_TIMEOUT_MS: z.coerce.number().int().min(1).default(30000),
   QDRANT_URL: z.string().min(1, "QDRANT_URL is required"),

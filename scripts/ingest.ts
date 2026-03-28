@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { v5 as uuidv5 } from "uuid";
+import { DateTime } from "luxon";
 
 import { DatabaseClient } from "../src/db/client.ts";
 import { env } from "../src/config/env.ts";
@@ -9,7 +11,7 @@ import { LlmProvider } from "../src/llm/provider.ts";
 import { logger } from "../src/utils/logger.ts";
 import { QdrantService } from "../src/vector/qdrant.ts";
 
-type SupportedTable = "patients" | "lab_reports" | "pathology_reports" | "prescriptions";
+type SupportedTable = "patients" | "prescriptions" | "medicines" | "doctors";
 
 interface IngestionState {
   [key: string]: string;
@@ -40,6 +42,21 @@ async function writeState(state: IngestionState): Promise<void> {
   await writeFile(env.INGESTION_STATE_PATH, JSON.stringify(state, null, 2));
 }
 
+const QDRANT_NAMESPACE = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"; // DNS Namespace
+
+function formatMysqlDate(date: any): string {
+  if (!date) return "1970-01-01 00:00:00";
+  
+  // Try to create a valid date object
+  const d = new Date(date);
+  if (isNaN(d.getTime())) {
+    return "1970-01-01 00:00:00";
+  }
+  
+  // Format as YYYY-MM-DD HH:mm:ss
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
 async function main() {
   const { tenantId, table } = parseCliArgs();
   const schema = await loadSchemaMapping();
@@ -52,11 +69,12 @@ async function main() {
     throw new Error("OPENAI_API_KEY is required for ingestion embeddings.");
   }
 
-  const tables: SupportedTable[] = table ? [table] : ["patients", "lab_reports", "pathology_reports", "prescriptions"];
+  const tables: SupportedTable[] = table ? [table] : ["patients", "prescriptions", "medicines", "doctors"];
 
   for (const tableName of tables) {
     const cursorKey = `${tenantId ?? "all"}:${tableName}`;
-    const lastSyncedAt = state[cursorKey] ?? "1970-01-01T00:00:00.000Z";
+    const lastSyncedAtRaw = state[cursorKey] ?? "1970-01-01 00:00:00";
+    const lastSyncedAt = formatMysqlDate(lastSyncedAtRaw);
 
     let sql = "";
     const values: unknown[] = [lastSyncedAt];
@@ -65,35 +83,16 @@ async function main() {
       const mapping = schema.patients;
       sql = `
         SELECT
-          ${mapping.idColumn} AS record_id,
-          ${mapping.tenantColumn} AS tenant_id,
-          ${mapping.nameColumn} AS title,
-          ${mapping.conditionColumn} AS body_text,
-          ${mapping.updatedAtColumn} AS updated_at
+          ${mapping.id} AS record_id,
+          ${mapping.tenant} AS tenant_id,
+          CONCAT(${mapping.firstName}, ' ', ${mapping.lastName}) AS title,
+          CONCAT('Blood Group: ', COALESCE(${mapping.bloodGroup}, 'N/A'), ', Gender: ', ${mapping.gender}) AS body_text,
+          ${mapping.updatedAt} AS updated_at
         FROM ${mapping.table}
-        WHERE ${mapping.updatedAtColumn} >= ?
+        WHERE ${mapping.updatedAt} >= ?
       `;
       if (tenantId) {
-        sql += ` AND ${mapping.tenantColumn} = ?`;
-        values.push(tenantId);
-      }
-    }
-
-    if (tableName === "lab_reports" || tableName === "pathology_reports") {
-      const mapping = schema[tableName];
-      sql = `
-        SELECT
-          ${mapping.idColumn} AS record_id,
-          ${mapping.tenantColumn} AS tenant_id,
-          ${mapping.patientIdColumn} AS patient_id,
-          ${mapping.nameColumn} AS title,
-          CONCAT(COALESCE(${mapping.summaryColumn}, ''), ' ', COALESCE(${mapping.textColumn}, '')) AS body_text,
-          ${mapping.updatedAtColumn} AS updated_at
-        FROM ${mapping.table}
-        WHERE ${mapping.updatedAtColumn} >= ?
-      `;
-      if (tenantId) {
-        sql += ` AND ${mapping.tenantColumn} = ?`;
+        sql += ` AND ${mapping.tenant} = ?`;
         values.push(tenantId);
       }
     }
@@ -102,17 +101,69 @@ async function main() {
       const mapping = schema.prescriptions;
       sql = `
         SELECT
-          ${mapping.idColumn} AS record_id,
-          ${mapping.tenantColumn} AS tenant_id,
-          ${mapping.patientIdColumn} AS patient_id,
-          ${mapping.medicationColumn} AS title,
-          CONCAT(COALESCE(${mapping.dosageColumn}, ''), ' ', COALESCE(${mapping.instructionsColumn}, '')) AS body_text,
-          ${mapping.updatedAtColumn} AS updated_at
-        FROM ${mapping.table}
-        WHERE ${mapping.updatedAtColumn} >= ?
+          rx.${mapping.id} AS record_id,
+          rx.${mapping.tenant} AS tenant_id,
+          rx.${mapping.patient} AS patient_id,
+          CONCAT('Prescription for Patient #', rx.${mapping.patient}) AS title,
+          CONCAT(
+            'Clinical History: ', COALESCE(rx.${mapping.medicalHistory}, 'None'), '\n',
+            'Current Medications: ', COALESCE(rx.${mapping.currentMedication}, 'None'), '\n',
+            'Allergies: ', COALESCE(rx.${mapping.foodAllergies}, 'None'), '\n',
+            'Advice: ', COALESCE(rx.${mapping.advice}, 'None'), '\n',
+            'Health Conditions: ', 
+            CASE WHEN rx.${mapping.diabetic} = '1' THEN 'Diabetic, ' ELSE '' END,
+            CASE WHEN rx.${mapping.highBloodPressure} = '1' THEN 'High BP, ' ELSE '' END,
+            CASE WHEN rx.${mapping.heartDisease} = '1' THEN 'Heart Disease, ' ELSE '' END,
+            CASE WHEN rx.${mapping.pregnancy} = '1' THEN 'Pregnant, ' ELSE '' END,
+            'Other: ', COALESCE(rx.${mapping.otherConditions}, 'None')
+          ) AS body_text,
+          rx.${mapping.updatedAt} AS updated_at
+        FROM ${mapping.table} rx
+        WHERE rx.${mapping.updatedAt} >= ?
       `;
       if (tenantId) {
-        sql += ` AND ${mapping.tenantColumn} = ?`;
+        sql += ` AND rx.${mapping.tenant} = ?`;
+        values.push(tenantId);
+      }
+    }
+
+    if (tableName as string === "doctors") {
+      const mapping = schema.doctors;
+      sql = `
+        SELECT
+          ${mapping.id} AS record_id,
+          ${mapping.tenant} AS tenant_id,
+          CONCAT(${mapping.firstName}, ' ', ${mapping.lastName}) AS title,
+          CONCAT('Specialty: ', ${mapping.specialty}, '\nDescription: ', COALESCE(${mapping.description}, '')) AS body_text,
+          ${mapping.updatedAt} AS updated_at
+        FROM ${mapping.table}
+        WHERE ${mapping.updatedAt} >= ?
+      `;
+      if (tenantId) {
+        sql += ` AND ${mapping.tenant} = ?`;
+        values.push(tenantId);
+      }
+    }
+
+    if (tableName === "medicines") {
+      const mapping = schema.medicines;
+      sql = `
+        SELECT
+          ${mapping.id} AS record_id,
+          ${mapping.tenant} AS tenant_id,
+          ${mapping.name} AS title,
+          CONCAT(
+            'Description: ', COALESCE(${mapping.description}, 'No description'), '\n',
+            'Side Effects: ', COALESCE(${mapping.sideEffects}, 'None reported'), '\n',
+            'Salt Composition: ', COALESCE(${mapping.saltComposition}, 'N/A'), '\n',
+            'Quantity: ', ${mapping.quantity}, ' (Available: ', ${mapping.availableQuantity}, ')'
+          ) AS body_text,
+          ${mapping.updatedAt} AS updated_at
+        FROM ${mapping.table}
+        WHERE ${mapping.updatedAt} >= ?
+      `;
+      if (tenantId) {
+        sql += ` AND ${mapping.tenant} = ?`;
         values.push(tenantId);
       }
     }
@@ -133,7 +184,7 @@ async function main() {
       const recordId = String(row.record_id);
       const title = String(row.title ?? tableName);
       const body = String(row.body_text ?? "");
-      const updatedAt = String(row.updated_at ?? lastSyncedAt);
+      const updatedAt = formatMysqlDate(row.updated_at ?? lastSyncedAt);
       const text = `${title}\n${body}`.trim();
 
       if (!text) {
@@ -141,8 +192,12 @@ async function main() {
       }
 
       const vector = await llm.embeddings.embedQuery(text);
+      if (row === result.rows[0]) {
+        logger.debug({ dimension: vector.length }, "Generated first embedding in batch");
+      }
+
       points.push({
-        id: `${tableName}:${tenant}:${recordId}`,
+        id: uuidv5(`${tableName}:${tenant}:${recordId}`, QDRANT_NAMESPACE),
         vector,
         payload: {
           tenant_id: tenant,

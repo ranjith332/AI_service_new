@@ -2,6 +2,7 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 
 import { env } from "../config/env.ts";
 import { AppError } from "../utils/errors.ts";
+import { logger } from "../utils/logger.ts";
 import { withRetry } from "../utils/retry.ts";
 
 export interface VectorPointPayload {
@@ -73,16 +74,51 @@ export class QdrantService {
     }
 
     await this.ensureCollection();
-    await withRetry(
-      () =>
-        this.client.upsert(env.QDRANT_COLLECTION, {
-          wait: true,
-          points
-        }),
+
+    const firstPoint = points[0];
+    if (!firstPoint) return;
+
+    logger.debug(
       {
-        attempts: 3
-      }
+        batchSize: points.length,
+        vectorSize: firstPoint.vector.length,
+        expectedSize: env.VECTOR_SIZE,
+        sampleId: firstPoint.id
+      },
+      "Preparing Qdrant upsert"
     );
+
+    if (firstPoint.vector.length !== env.VECTOR_SIZE) {
+      throw new AppError(
+        `Vector size mismatch. Model returned ${firstPoint.vector.length}, but collection expects ${env.VECTOR_SIZE}.`,
+        500,
+        "vector_size_mismatch"
+      );
+    }
+
+    try {
+      await withRetry(
+        () =>
+          this.client.upsert(env.QDRANT_COLLECTION, {
+            wait: true,
+            points
+          }),
+        {
+          attempts: 3
+        }
+      );
+      logger.info({ count: points.length }, "Successfully upserted points to Qdrant");
+    } catch (error: any) {
+      logger.error(
+        {
+          error: error.message,
+          stack: error.stack,
+          points: points.map(p => ({ id: p.id, vectorSize: p.vector.length }))
+        },
+        "Qdrant upsert failed"
+      );
+      throw new AppError(`Qdrant upsert failed: ${error.message}`, 500, "qdrant_upsert_failed", error);
+    }
   }
 
   async search(params: {

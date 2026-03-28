@@ -11,33 +11,40 @@ export const queryBodySchema = z.object({
 });
 
 export const intentSchema = z.object({
-  summary: z.string().min(1),
-  operation: z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary"]),
-  target: z.enum([
-    "appointments",
-    "patients",
-    "lab_reports",
-    "pathology_reports",
-    "prescriptions",
-    "billing",
-    "medical_records",
-    "doctors",
-    "unknown"
-  ]),
-  patientName: z.string().nullable(),
-  doctorName: z.string().nullable(),
-  condition: z.string().nullable(),
-  metric: z.enum(["none", "revenue", "appointment_count", "doctor_with_most_appointments"]),
+  summary: z.string().default("No summary"),
+  operation: z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary"]).default("list"),
+  target: z.preprocess(
+    (val) => (typeof val === "string" ? val.toLowerCase() : val),
+    z.enum([
+      "appointments",
+      "appointment",
+      "patients",
+      "patient",
+      "prescriptions",
+      "prescription",
+      "doctors",
+      "doctor",
+      "medicines",
+      "medicine",
+      "users",
+      "user",
+      "unknown"
+    ])
+  ).default("unknown"),
+  patientName: z.string().nullable().optional(),
+  doctorName: z.string().nullable().optional(),
+  condition: z.string().nullable().optional(),
+  metric: z.enum(["none", "revenue", "appointment_count", "doctor_with_most_appointments"]).default("none"),
   timeRange: z.object({
-    preset: z.enum(["today", "yesterday", "this_week", "this_month", "all_time", "latest", "custom"]),
-    start: z.string().nullable(),
-    end: z.string().nullable()
-  }),
-  limit: z.number().int().min(1).max(100),
-  needsSql: z.boolean(),
-  needsVector: z.boolean(),
-  sort: z.enum(["latest", "oldest", "highest", "lowest"]),
-  confidence: z.number().min(0).max(1)
+    preset: z.enum(["today", "yesterday", "this_week", "this_month", "all_time", "latest", "custom"]).default("all_time"),
+    start: z.string().nullable().optional(),
+    end: z.string().nullable().optional()
+  }).default({ preset: "all_time" }),
+  limit: z.number().int().min(1).max(100).default(5),
+  needsSql: z.boolean().default(true),
+  needsVector: z.boolean().default(false),
+  sort: z.enum(["latest", "oldest", "highest", "lowest"]).default("latest"),
+  confidence: z.number().min(0).max(1).default(1)
 });
 
 export const strategySchema = z.enum(["sql", "vector", "hybrid"]);
