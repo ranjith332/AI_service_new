@@ -157,11 +157,6 @@ export class LlmProvider {
           output: output as z.infer<TSchema>
         };
       } catch (error: any) {
-        console.log("STRUCTURED ERROR from", candidate.name, ":", error.message);
-        if (error.issues) {
-          console.log("ZOD ISSUES:", JSON.stringify(error.issues, null, 2));
-        }
-
         // If it's a parsing error or validation error, try manual fallback
         if (error.name === "SyntaxError" || error.message?.includes("JSON") || error.message?.includes("Unexpected identifier") || error.issues) {
           logger.warn({ provider: candidate.name }, "Structured output parsing failed, falling back to manual extraction");
@@ -174,13 +169,11 @@ export class LlmProvider {
             });
             
             logger.debug({ text: result.text }, "Manual extraction raw text");
-            console.log("DEBUG RAW TEXT:", result.text);
 
             // Extract JSON from text (fenced or just between brackets)
             const jsonMatch = result.text.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
               const parsed = JSON.parse(jsonMatch[0]);
-              console.log("DEBUG PARSED OBJECT:", JSON.stringify(parsed, null, 2));
               const validated = schema.parse(parsed);
               return {
                 provider: result.provider,

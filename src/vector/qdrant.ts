@@ -41,11 +41,20 @@ export class QdrantService {
     const exists = collections.collections.some((collection) => collection.name === env.QDRANT_COLLECTION);
 
     if (!exists) {
+      const vectorConfig = env.QDRANT_VECTOR_NAME
+        ? {
+            [env.QDRANT_VECTOR_NAME]: {
+              size: env.VECTOR_SIZE,
+              distance: "Cosine" as const
+            }
+          }
+        : {
+            size: env.VECTOR_SIZE,
+            distance: "Cosine" as const
+          };
+
       await this.client.createCollection(env.QDRANT_COLLECTION, {
-        vectors: {
-          size: env.VECTOR_SIZE,
-          distance: "Cosine"
-        },
+        vectors: vectorConfig as any,
         on_disk_payload: true
       });
     }
@@ -97,11 +106,17 @@ export class QdrantService {
     }
 
     try {
+      const formattedPoints = points.map((p) => ({
+        id: p.id,
+        vector: env.QDRANT_VECTOR_NAME ? { [env.QDRANT_VECTOR_NAME]: p.vector } : p.vector,
+        payload: p.payload
+      }));
+
       await withRetry(
         () =>
           this.client.upsert(env.QDRANT_COLLECTION, {
             wait: true,
-            points
+            points: formattedPoints
           }),
         {
           attempts: 3
@@ -163,7 +178,9 @@ export class QdrantService {
     const result = await withRetry(
       () =>
         this.client.search(env.QDRANT_COLLECTION, {
-          vector: params.embedding,
+          vector: env.QDRANT_VECTOR_NAME
+            ? { name: env.QDRANT_VECTOR_NAME, vector: params.embedding }
+            : params.embedding,
           limit: params.limit ?? env.VECTOR_RESULT_LIMIT,
           filter,
           with_payload: true

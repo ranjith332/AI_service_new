@@ -1,7 +1,0 @@
-[dotenv@17.3.1] injecting env (0) from .env -- tip: ???? prevent building .env in docker: https://dotenvx.com/prebuild
-LlmProvider initialized
-NVIDIA Base URL: https://integrate.api.nvidia.com/v1
-NVIDIA LLM Model: moonshotai/kimi-k2-thinking
-NVIDIA Embedding Model: baai/bge-m3
-Testing Vector Retrieval Fix...
-{"level":40,"time":"2026-03-28T05:18:31.482Z","service":"doctor-healix-ai-service","environment":"development","name":"doctor-healix-ai-service","provider":"nvidia_qwen","error":"[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"appointments\",\n      \"appointment\",\n      \"patients\",\n      \"patient\",\n      \"prescriptions\",\n      \"prescription\",\n      \"doctors\",\n      \"doctor\",\n      \"medicines\",\n      \"medicine\",\n      \"users\",\n      \"user\",\n      \"unknown\"\n    ],\n    \"path\": [\n      \"target\"\n    ],\n    \"message\": \"Invalid option: expected one of \\\"appointments\\\"|\\\"appointment\\\"|\\\"patients\\\"|\\\"patient\\\"|\\\"prescriptions\\\"|\\\"prescription\\\"|\\\"doctors\\\"|\\\"doctor\\\"|\\\"medicines\\\"|\\\"medicine\\\"|\\\"users\\\"|\\\"user\\\"|\\\"unknown\\\"\"\n  }\n]","msg":"Structured LLM provider failed, trying next candidate"}

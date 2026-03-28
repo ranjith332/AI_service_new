@@ -25,6 +25,7 @@ const envSchema = z.object({
   QDRANT_URL: z.string().min(1, "QDRANT_URL is required"),
   QDRANT_API_KEY: z.string().optional(),
   QDRANT_COLLECTION: z.string().min(1).default("doctor_healix_healthcare"),
+  QDRANT_VECTOR_NAME: z.string().optional(),
   VECTOR_SIZE: z.coerce.number().int().positive().default(3072),
   VECTOR_RESULT_LIMIT: z.coerce.number().int().positive().default(5),
   ENABLE_QUERY_CACHE: z
