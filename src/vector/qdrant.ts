@@ -27,7 +27,8 @@ export interface UpsertVectorPoint {
 export class QdrantService {
   private readonly client = new QdrantClient({
     url: env.QDRANT_URL,
-    apiKey: env.QDRANT_API_KEY
+    apiKey: env.QDRANT_API_KEY,
+    checkCompatibility: false
   });
 
   private initialized = false;

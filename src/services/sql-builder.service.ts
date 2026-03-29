@@ -14,6 +14,8 @@ interface BuildParams {
 }
 
 export class SqlBuilderService {
+  constructor(private readonly mapping: SchemaMapping) {}
+
   build(params: BuildParams): SqlQuery {
     const { intent } = params;
 
@@ -25,8 +27,15 @@ export class SqlBuilderService {
       return this.buildPatientsQuery(params);
     }
 
-    if (intent.target === "doctors" || intent.metric === "doctor_with_most_appointments") {
-      return this.buildDoctorRankingQuery(params);
+    if (intent.target === "doctors") {
+       if (intent.operation === "list") {
+          return this.buildDoctorsListQuery(params);
+       }
+       return this.buildDoctorRankingQuery(params);
+    }
+
+    if (intent.metric === "doctor_with_most_appointments") {
+       return this.buildDoctorRankingQuery(params);
     }
 
     if (intent.target === "prescriptions" || intent.target === "prescription") {
@@ -48,39 +57,62 @@ export class SqlBuilderService {
     throw new UnsupportedQueryError();
   }
 
+  private findTable(tableName: string, schema: DiscoveredSchema): string | undefined {
+    if (schema[tableName]) return tableName;
+    const plural = `${tableName}s`;
+    if (schema[plural]) return plural;
+    const singular = tableName.replace(/s$/, "");
+    if (schema[singular]) return singular;
+    const snake = tableName.replace(/([A-Z])/g, "_$1").toLowerCase().replace(/^_/, "");
+    if (schema[snake]) return snake;
+    const snakePlural = `${snake}s`;
+    if (schema[snakePlural]) return snakePlural;
+    
+    // Check all keys for a fuzzy match
+    const lower = tableName.toLowerCase().replace(/s$/, "");
+    for (const key of Object.keys(schema)) {
+        if (key.toLowerCase().replace(/s$/, "") === lower) return key;
+    }
+
+    return undefined;
+  }
+
   buildDynamic(params: {
     tenantId: string;
     plan: DynamicSqlPlan;
     discoveredSchema: DiscoveredSchema;
   }): SqlQuery {
     const schema = params.discoveredSchema;
-    const baseTable = schema[params.plan.baseTable];
-    if (!baseTable) {
+    const baseTableName = this.findTable(params.plan.baseTable, schema);
+    if (!baseTableName) {
       throw new UnsupportedQueryError(`Unknown base table ${params.plan.baseTable}.`);
     }
+    const baseTable = schema[baseTableName]!;
 
     const aliasByTable = new Map<string, string>();
     const values: unknown[] = [];
     let aliasIndex = 0;
 
     const assignAlias = (tableName: string) => {
-      const existing = aliasByTable.get(tableName);
+      const resolved = this.findTable(tableName, schema) || tableName;
+      const existing = aliasByTable.get(resolved);
       if (existing) {
         return existing;
       }
 
       const alias = `t${aliasIndex}`;
       aliasIndex += 1;
-      aliasByTable.set(tableName, alias);
+      aliasByTable.set(resolved, alias);
       return alias;
     };
 
     const getColumn = (tableName: string, columnName: string) => {
-      const table = schema[tableName];
-      if (!table) {
+      const resolved = this.findTable(tableName, schema);
+      if (!resolved) {
         throw new UnsupportedQueryError(`Table ${tableName} is not allowed.`);
       }
 
+      const table = schema[resolved]!;
       const column = table.columns.find((item) => item.name === columnName);
       if (!column) {
         throw new UnsupportedQueryError(`Column ${tableName}.${columnName} is not allowed.`);
@@ -98,10 +130,14 @@ export class SqlBuilderService {
     };
 
     const baseAlias = assignAlias(baseTable.name);
-    const allowedTables = new Set<string>([baseTable.name, ...params.plan.joins.map((join) => join.table)]);
+    const allowedTableNames = new Set<string>([
+        baseTable.name, 
+        ...params.plan.joins.map((join) => this.findTable(join.table, schema) || join.table)
+    ]);
 
     const assertAllowedTableReference = (tableName: string) => {
-      if (!allowedTables.has(tableName)) {
+      const resolved = this.findTable(tableName, schema) || tableName;
+      if (!allowedTableNames.has(resolved)) {
         throw new UnsupportedQueryError(`Table ${tableName} is referenced without being part of the query joins.`);
       }
     };
@@ -121,13 +157,14 @@ export class SqlBuilderService {
 
     const joinSql = params.plan.joins
       .map((join) => {
-        const table = schema[join.table];
-        if (!table) {
+        const resolved = this.findTable(join.table, schema);
+        if (!resolved) {
           throw new UnsupportedQueryError(`Join table ${join.table} is not allowed.`);
         }
+        const table = schema[resolved]!;
 
         const joinAlias = assignAlias(table.name);
-        const predicates = join.on.map((condition) => {
+        let predicates = join.on.map((condition) => {
           assertAllowedTableReference(condition.leftTable);
           assertAllowedTableReference(condition.rightTable);
           getColumn(condition.leftTable, condition.leftColumn);
@@ -136,6 +173,95 @@ export class SqlBuilderService {
           const rightAlias = assignAlias(condition.rightTable);
           return `${leftAlias}.${quote(condition.leftColumn)} = ${rightAlias}.${quote(condition.rightColumn)}`;
         });
+
+        // AUTO-JOIN FALLBACK: If planner didn't specify 'ON' conditions, infer from mapping
+        if (predicates.length === 0) {
+            const possibleOtherTables = [params.plan.baseTable, ...params.plan.joins.map(j => j.table)].filter(t => t !== table.name);
+            let inferred = false;
+            
+            const toEntity = (tableName: string) => tableName.toLowerCase().replace(/s$/, "").replace(/_([a-z])/g, (_, g) => g.toUpperCase());
+
+            for (const otherName of possibleOtherTables) {
+                const otherAlias = assignAlias(otherName);
+                const resolvedOther = this.findTable(otherName, schema);
+                if (!resolvedOther) continue;
+                const otherTableData = schema[resolvedOther]!;
+
+                const otherEntity = toEntity(otherName);
+                const joinEntity = toEntity(table.name);
+
+                // 1. HARDCODED ENTITY ROADMAP (Absolute Stability)
+                const RELATIONSHIP_MAP: Record<string, Record<string, string>> = {
+                    appointments: { patients: 'patient_id', doctors: 'doctor_id' },
+                    prescriptions: { patients: 'patient_id', doctors: 'doctor_id', users: 'patient_id' },
+                    patient_dependents: { patients: 'patient_id' },
+                    schedules: { doctors: 'doctor_id' },
+                    schedule_days: { schedules: 'schedule_id' },
+                    slots: { schedule_days: 'schedule_day_id' },
+                    patients: { users: 'user_id' },
+                    doctors: { users: 'user_id' }
+                };
+
+                const getRoadmapLink = (a: string, b: string) => (RELATIONSHIP_MAP[a]?.[b]);
+                const roadmapFk = getRoadmapLink(joinEntity, otherEntity) || getRoadmapLink(table.name, otherName);
+                
+                if (roadmapFk && table.columns.some(c => c.name === roadmapFk)) {
+                    predicates.push(`${joinAlias}.${quote(roadmapFk)} = ${otherAlias}.${quote('id')}`);
+                    inferred = true; break;
+                }
+                const reverseRoadmapFk = getRoadmapLink(otherEntity, joinEntity) || getRoadmapLink(otherName, table.name);
+                if (reverseRoadmapFk && otherTableData.columns.some(c => c.name === reverseRoadmapFk)) {
+                    predicates.push(`${otherAlias}.${quote(reverseRoadmapFk)} = ${joinAlias}.${quote('id')}`);
+                    inferred = true; break;
+                }
+
+                // 2. GREEDY COLUMN LINKER (Folproof Relationship Discovery)
+                const joinFkName = `${otherEntity}_id`;
+                if (table.columns.find(c => c.name === joinFkName)) {
+                    predicates.push(`${joinAlias}.${quote(joinFkName)} = ${otherAlias}.${quote('id')}`);
+                    inferred = true; break;
+                }
+                const otherFkName = `${joinEntity}_id`;
+                if (otherTableData.columns.find(c => c.name === otherFkName)) {
+                    predicates.push(`${otherAlias}.${quote(otherFkName)} = ${joinAlias}.${quote('id')}`);
+                    inferred = true; break;
+                }
+
+                // 3. Bidirectional Mapping Lookup (Schema-Mapping.ts Backup)
+                const joinTableMap: any = (this.mapping as any)[table.name] || (this.mapping as any)[this.findTable(table.name, schema) || ''];
+                const otherTableMap: any = (this.mapping as any)[otherName] || (this.mapping as any)[this.findTable(otherName, schema) || ''];
+
+                const matchesEntity = (mapKey: string, entity: string) => 
+                    entity.toLowerCase() === mapKey.toLowerCase() || 
+                    entity.toLowerCase().startsWith(mapKey.toLowerCase()) ||
+                    mapKey.toLowerCase().startsWith(entity.toLowerCase());
+
+                if (joinTableMap) {
+                    for (const [mapKey, colName] of Object.entries(joinTableMap)) {
+                        if (matchesEntity(mapKey, otherEntity) && typeof colName === "string") {
+                             predicates.push(`${joinAlias}.${quote(colName)} = ${otherAlias}.${quote('id')}`);
+                             inferred = true; break;
+                        }
+                    }
+                }
+                if (inferred) break;
+
+                if (otherTableMap) {
+                    for (const [mapKey, colName] of Object.entries(otherTableMap)) {
+                        if (matchesEntity(mapKey, joinEntity) && typeof colName === "string") {
+                             predicates.push(`${otherAlias}.${quote(colName)} = ${joinAlias}.${quote('id')}`);
+                             inferred = true; break;
+                        }
+                    }
+                }
+                if (inferred) break;
+            }
+
+            if (!inferred) {
+                logger.error({ joinTable: table.name, candidates: possibleOtherTables }, "SHIELD_OF_STABILITY: No relationship found. Aborting join to prevent Cartesian product.");
+                throw new UnsupportedQueryError(`Could not safely link table '${table.name}' to the rest of the query. Please rephrase or use explicit filters.`);
+            }
+        }
 
         predicates.push(`${joinAlias}.${quote(table.tenant)} = ?`);
         values.push(params.tenantId);
@@ -244,6 +370,8 @@ export class SqlBuilderService {
       description: `dynamic_${params.plan.baseTable}`
     };
 
+    logger.info({ sql: result.text, values: result.values, plan: params.plan }, "Generated Dynamic SQL Query");
+
     // Safety check: ensure at least one table has been filtered by tenant
     if (!whereParts.some((p) => p.includes(" = ?") || p.includes(" IN ("))) {
       logger.warn({ plan: params.plan }, "Query generated without explicit tenant filter on base table");
@@ -268,8 +396,9 @@ export class SqlBuilderService {
     }
 
     if (intent.doctorName) {
-      where.push(`LOWER(d.${doctors.firstName}) LIKE ?`);
-      values.push(`%${intent.doctorName.toLowerCase()}%`);
+      where.push(`(LOWER(d.${doctors.firstName}) LIKE ? OR LOWER(d.${doctors.lastName}) LIKE ? OR LOWER(CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName})) LIKE ?)`);
+      const namePattern = `%${intent.doctorName.toLowerCase()}%`;
+      values.push(namePattern, namePattern, namePattern);
     }
 
     if (intent.patientName) {
@@ -285,7 +414,8 @@ export class SqlBuilderService {
           a.${appointments.id} AS appointment_id,
           a.${appointments.scheduledAt} AS scheduled_at,
           a.${appointments.isCompleted} AS status,
-          a.${appointments.patientName} AS patient_name,
+          a.${appointments.tokenNumber} AS token_number,
+          COALESCE(a.${appointments.patientName}, CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName})) AS patient_name,
           CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName}) AS doctor_name
         FROM ${appointments.table} a
         LEFT JOIN ${patients.table} p
@@ -371,6 +501,38 @@ export class SqlBuilderService {
     };
   }
 
+  private buildDoctorsListQuery({ tenantId, intent, schema }: BuildParams): SqlQuery {
+    const doctors = schema.doctors;
+    const users = schema.users;
+    const values: unknown[] = [tenantId];
+    const where = [`d.${doctors.tenant} = ?`];
+
+    if (intent.doctorName) {
+      where.push(`(LOWER(d.${doctors.firstName}) LIKE ? OR LOWER(d.${doctors.lastName}) LIKE ? OR LOWER(u.${users.firstName}) LIKE ? OR LOWER(u.${users.lastName}) LIKE ?)`);
+      const namePattern = `%${intent.doctorName.toLowerCase()}%`;
+      values.push(namePattern, namePattern, namePattern, namePattern);
+    }
+
+    values.push(intent.limit);
+
+    return {
+      text: `
+        SELECT
+          d.${doctors.id} AS doctor_id,
+          COALESCE(CONCAT(u.${users.firstName}, ' ', u.${users.lastName}), CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName})) AS doctor_name,
+          d.${doctors.specialty} AS specialist,
+          d.${doctors.designation} AS designation
+        FROM ${doctors.table} d
+        LEFT JOIN ${users.table} u ON u.${users.id} = d.${doctors.user}
+        WHERE ${where.join(" AND ")}
+        ORDER BY doctor_name ASC
+        LIMIT ?
+      `,
+      values,
+      description: "list_doctors"
+    };
+  }
+
   private buildPrescriptionLookupQuery({ tenantId, intent, schema }: BuildParams): SqlQuery {
     const prescriptions = schema.prescriptions;
     const patients = schema.patients;
@@ -380,15 +542,15 @@ export class SqlBuilderService {
     const where = [`rx.${prescriptions.tenant} = ?`];
 
     if (intent.patientName) {
-      where.push(`(LOWER(p.${patients.firstName}) LIKE ? OR LOWER(pu.${users.firstName}) LIKE ?)`);
+      where.push(`(LOWER(p.${patients.firstName}) LIKE ? OR LOWER(p.${patients.lastName}) LIKE ? OR LOWER(CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName})) LIKE ? OR LOWER(pu.${users.firstName}) LIKE ? OR LOWER(pu.${users.lastName}) LIKE ?)`);
       const namePattern = `%${intent.patientName.toLowerCase()}%`;
-      values.push(namePattern, namePattern);
+      values.push(namePattern, namePattern, namePattern, namePattern, namePattern);
     }
 
     if (intent.doctorName) {
-      where.push(`(LOWER(d.${doctors.firstName}) LIKE ? OR LOWER(du.${users.firstName}) LIKE ?)`);
+      where.push(`(LOWER(d.${doctors.firstName}) LIKE ? OR LOWER(d.${doctors.lastName}) LIKE ? OR LOWER(CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName})) LIKE ? OR LOWER(du.${users.firstName}) LIKE ? OR LOWER(du.${users.lastName}) LIKE ?)`);
       const namePattern = `%${intent.doctorName.toLowerCase()}%`;
-      values.push(namePattern, namePattern);
+      values.push(namePattern, namePattern, namePattern, namePattern, namePattern);
     }
 
     values.push(intent.limit);
@@ -489,8 +651,9 @@ export class SqlBuilderService {
     const where = [`s.${schedules.tenant} = ?`];
 
     if (intent.doctorName) {
-      where.push(`LOWER(dr.${doctors.firstName}) LIKE ?`);
-      values.push(`%${intent.doctorName.toLowerCase()}%`);
+      where.push(`(LOWER(dr.${doctors.firstName}) LIKE ? OR LOWER(dr.${doctors.lastName}) LIKE ? OR LOWER(CONCAT(dr.${doctors.firstName}, ' ', dr.${doctors.lastName})) LIKE ?)`);
+      const namePattern = `%${intent.doctorName.toLowerCase()}%`;
+      values.push(namePattern, namePattern, namePattern);
     }
 
     values.push(intent.limit);

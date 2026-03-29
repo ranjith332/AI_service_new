@@ -7,41 +7,121 @@ interface ResponseParams {
   intent: QueryIntent;
   sqlRows: unknown[];
   vectorRows: unknown[];
+  timeZone: string;
 }
 
 export class ResponseGeneratorService {
   constructor(private readonly llm: LlmProvider) {}
 
-  async generate(params: ResponseParams): Promise<{ provider: "openai" | "nvidia_qwen"; answer: string }> {
+  async generate(
+    params: ResponseParams
+  ): Promise<{ provider: "openai" | "nvidia_qwen"; answer: string }> {
+    
+    // 🔥 Smaller + cleaner system prompt
     const system = [
-      "You are the Doctor Healix analytics assistant.",
-      "Your goal is to provide a clean, professional, and human-readable answer strictly based on the provided data.",
-      "Translate raw technical values into friendly labels:",
-      "- For Appointment Status: 0 = 'Pending/Incomplete', 1 = 'Completed'.",
-      "- If a patient or doctor name is missing or null, refer to them as 'the patient' or 'the doctor'.",
-      "- Format dates and times naturally (e.g., '10:30 AM').",
-      "Organize information logically using bullet points or paragraphs. Group by date when appropriate.",
-      "Never mention SQL, internal IDs like '#125', table names, or JSON structures.",
-      "If no data matches, politely state that no matching records were found for this tenant.",
-      "If the user query was a question, answer it directly and warmly."
+      "You are Doctor Healix AI assistant.",
+      "Provide clean, professional, human-readable answers based only on given data.",
+      `Today is ${new Date().toLocaleDateString("en-US", {
+        timeZone: params.timeZone,
+      })}.`,
+      "Convert UTC timestamps to local timezone.",
+      "Translate values:",
+      "0=Pending, 1=Completed, 4=Cancelled.",
+      "Never mention SQL, IDs, or JSON.",
+      "If no data found, say politely.",
+      "If general question, answer normally.",
     ].join(" ");
 
-    const user = JSON.stringify({
-      tenant_id: params.tenantId,
-      user_query: params.userQuery,
-      intent: params.intent,
-      sql_results: params.sqlRows,
-      vector_results: params.vectorRows
-    });
-
-    const result = await this.llm.invokeText({
-      system,
-      user
-    });
-
-    return {
-      provider: result.provider,
-      answer: result.text
+    // 🔥 CRAG-lite relevance filter
+    const isRelevant = (row: any, query: string) => {
+      const text = JSON.stringify(row).toLowerCase();
+      return query
+        .toLowerCase()
+        .split(" ")
+        .some((word) => text.includes(word));
     };
+
+    const sanitizeData = (rows: any[] | undefined, query: string) => {
+      if (!rows || !Array.isArray(rows)) return [];
+
+      return rows
+        .filter((r) => isRelevant(r, query)) // CRAG filter
+        .slice(0, 15) // HIGHER LIMIT: 15 rows
+        .map((row) => {
+          const clean: Record<string, any> = {};
+          let count = 0;
+
+          for (const key in row) {
+            if (count >= 15) break; // HIGHER LIMIT: 15 fields
+
+            const val = row[key];
+
+            if (key.startsWith("_")) continue;
+            if (val === null || val === undefined) continue;
+
+            if (typeof val === "string") {
+              clean[key] =
+                val.length > 1000
+                  ? val.substring(0, 1000) + "... [clipped]"
+                  : val;
+            } else {
+              clean[key] = val;
+            }
+
+            count++;
+          }
+
+          return clean;
+        });
+    };
+
+    const toTextFormat = (rows: any[] | undefined, label: string) => {
+      if (!rows || rows.length === 0) return `${label}: No direct records found.`;
+      
+      return `${label}:\n` + rows.map((row, i) => {
+        const parts = Object.entries(row)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(" | ");
+        return `* Row ${i+1}: ${parts}`;
+      }).join("\n");
+    };
+
+    const safeSQLRows = sanitizeData(params.sqlRows, params.userQuery);
+    const safeVectorRows = sanitizeData(params.vectorRows, params.userQuery).slice(0, 10);
+
+    const sqlText = toTextFormat(safeSQLRows, "DATABASE_RESULTS");
+    const vectorText = toTextFormat(safeVectorRows, "KNOWLEDGE_BASE_RESULTS");
+
+    // 🔥 Absolute stable text format instead of complex JSON
+    const userPayload = [
+      `USER_QUERY: ${params.userQuery}`,
+      `INTENT: ${params.intent}`,
+      `TIMEZONE: ${params.timeZone}`,
+      `TENANT_ID: ${params.tenantId}`,
+      "",
+      sqlText,
+      "",
+      vectorText
+    ].join("\n");
+
+    try {
+      const result = await this.llm.invokeText({
+        system,
+        user: userPayload,
+      });
+
+      return {
+        provider: result.provider,
+        answer: result.text,
+      };
+    } catch (error: any) {
+      console.error("LLM PRIMARY FAILED. Reason:", error.message);
+
+      // Fallback for extreme stability
+      return {
+        provider: "openai",
+        answer: "I encountered a technical issue while processing the records. Please try asking again in a simpler way or check back in a moment.",
+      };
+    }
   }
-}
+}

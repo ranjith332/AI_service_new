@@ -36,9 +36,10 @@ export class QueryPlannerService {
     normalizedTarget === "doctors" ||
     normalizedTarget === "patients" ||
     normalizedTarget === "dependents" ||
-    normalizedTarget === "doctorHolidays"
-      ? [normalizedTarget]
-      : ["patients", "prescriptions", "medicines", "doctors", "dependents"];
+    normalizedTarget === "doctorHolidays" ||
+    normalizedTarget === "appointments"
+      ? [normalizedTarget, "schedules", "scheduleDays"]
+      : ["patients", "prescriptions", "medicines", "doctors", "dependents", "schedules", "scheduleDays"];
 
   const runSql =
     intent.needsSql ||
@@ -50,8 +51,9 @@ export class QueryPlannerService {
   const runVector =
     intent.needsVector ||
     intent.operation === "semantic_lookup" ||
-    ["prescriptions", "medicines", "doctors", "patients", "dependents", "doctorHolidays"].includes(normalizedTarget) ||
-    normalizedTarget === "unknown";
+    (normalizedTarget === "unknown" && !intent.needsSql) ||
+    (["prescriptions", "medicines", "doctors"].includes(normalizedTarget) && 
+     !["list", "aggregate", "latest", "book", "export_pdf"].includes(intent.operation));
 
   const strategy: ExecutionStrategy = runSql && runVector ? "hybrid" : runVector ? "vector" : "sql";
 

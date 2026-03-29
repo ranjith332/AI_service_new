@@ -12,7 +12,10 @@ export const queryBodySchema = z.object({
 
 export const intentSchema = z.object({
   summary: z.string().default("No summary"),
-  operation: z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary", "book"]).default("list"),
+  operation: z.preprocess(
+    (val) => (typeof val === "string" ? val.toLowerCase() : val),
+    z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary", "book", "export_pdf", "general_knowledge"]).catch("list")
+  ).default("list"),
   target: z.preprocess(
     (val) => (typeof val === "string" ? val.toLowerCase() : val),
     z.enum([
@@ -39,31 +42,74 @@ export const intentSchema = z.object({
       "doctorsessions",
       "doctorsession",
       "unknown"
-    ])
+    ]).catch("unknown")
   ).default("unknown"),
   patientName: z.string().nullable().optional(),
+  patientId: z.number().nullable().optional(),
   doctorName: z.string().nullable().optional(),
   condition: z.string().nullable().optional(),
-  metric: z.enum(["none", "revenue", "appointment_count", "doctor_with_most_appointments"]).default("none"),
+  metric: z.preprocess(
+    (val) => (typeof val === "string" ? val.toLowerCase() : val),
+    z.enum(["none", "revenue", "appointment_count", "doctor_with_most_appointments"]).catch("none")
+  ).default("none"),
   timeRange: z.object({
     preset: z.enum(["today", "yesterday", "this_week", "this_month", "all_time", "latest", "custom"]).default("all_time"),
     start: z.string().nullable().optional(),
     end: z.string().nullable().optional()
   }).default({ preset: "all_time" }),
-  limit: z.number().int().min(1).max(100).default(5),
+  limit: z.preprocess((val) => (val === null ? undefined : val), z.number().int().min(1).max(100).default(5)),
   needsSql: z.boolean().default(true),
   needsVector: z.boolean().default(false),
-  sort: z.enum(["latest", "oldest", "highest", "lowest"]).default("latest"),
+  sort: z.preprocess(
+    (val) => (typeof val === "string" ? val.toLowerCase() : val),
+    z.enum(["latest", "oldest", "highest", "lowest"]).catch("latest")
+  ).default("latest"),
   needsClarification: z.boolean().default(false),
+  clarificationMessage: z.string().nullable().optional(),
+  bookingDetails: z.preprocess(
+    (val) => (val === null ? undefined : val),
+    z.object({
+      name: z.string().nullable().optional(),
+      doctor: z.string().nullable().optional(),
+      session: z.enum(["morning", "afternoon", "night", "none"]).default("none"),
+      token: z.number().nullable().optional(),
+      appointmentDate: z.string().nullable().optional()
+    }).default({ session: "none" })
+  ).default({ session: "none" }),
+  confidence: z.preprocess((val) => (val === null ? undefined : val), z.number().min(0).max(1).default(1))
+});
+
+// RAW SCHEMA: Very permissive. Used ONLY for LLM structured output.
+// We make almost everything optional so the AI doesn't fail validation if it misses a field.
+// The RICH schema (intentSchema) will handle defaults and cleanup.
+export const intentSchemaRaw = z.object({
+  summary: z.string().optional().nullable(),
+  operation: z.string().optional().nullable(),
+  target: z.string().optional().nullable(),
+  patientName: z.string().nullable().optional(),
+  patientId: z.number().nullable().optional(),
+  doctorName: z.string().nullable().optional(),
+  condition: z.string().nullable().optional(),
+  metric: z.string().optional().nullable(),
+  timeRange: z.object({
+    preset: z.string().optional().nullable(),
+    start: z.string().nullable().optional(),
+    end: z.string().nullable().optional()
+  }).optional().nullable(),
+  limit: z.number().int().optional().nullable(),
+  needsSql: z.boolean().optional().nullable(),
+  needsVector: z.boolean().optional().nullable(),
+  sort: z.string().optional().nullable(),
+  needsClarification: z.boolean().optional().nullable(),
   clarificationMessage: z.string().nullable().optional(),
   bookingDetails: z.object({
     name: z.string().nullable().optional(),
     doctor: z.string().nullable().optional(),
-    session: z.enum(["morning", "afternoon", "night", "none"]).default("none"),
+    session: z.string().optional().nullable(),
     token: z.number().nullable().optional(),
     appointmentDate: z.string().nullable().optional()
-  }).default({ session: "none" }),
-  confidence: z.number().min(0).max(1).default(1)
+  }).optional().nullable(),
+  confidence: z.number().optional().nullable()
 });
 
 export const strategySchema = z.enum(["sql", "vector", "hybrid"]);

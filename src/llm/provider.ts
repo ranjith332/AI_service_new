@@ -101,20 +101,19 @@ export class LlmProvider {
   private getCandidates(useFastModel = false): Array<{ name: ProviderName; model: ChatOpenAI }> {
     const candidates: Array<{ name: ProviderName; model: ChatOpenAI }> = [];
 
-    // Prioritize OpenAI as requested by user
+    // Prioritize OpenAI as it is extremely fast and reliable for all tasks
     if (this.openAiModel) {
       candidates.push({ name: "openai", model: this.openAiModel });
+    }
+
+    // Add Nvidia Intent Model as second choice if fast model requested
+    if (useFastModel && this.nvidiaIntentModel) {
+      candidates.push({ name: "nvidia_qwen", model: this.nvidiaIntentModel });
     }
 
     // Add Nvidia Qwen as fallback
     if (this.nvidiaQwenModel) {
       candidates.push({ name: "nvidia_qwen", model: this.nvidiaQwenModel });
-    }
-
-    // Replace first candidate with fast model if requested and available
-    if (useFastModel && this.nvidiaIntentModel) {
-      // In fast mode, we place the intent model first
-      candidates.unshift({ name: "nvidia_qwen", model: this.nvidiaIntentModel });
     }
 
     return candidates;
@@ -136,7 +135,9 @@ export class LlmProvider {
         // Try standard structured output first (for providers that support it natively)
         const runnable = candidate.model.withStructuredOutput(schema, {
           name: params.schemaName,
-          method: "jsonSchema" // Fix typo: jsonSchema (camelCase)
+          method: "jsonSchema"
+        }).withConfig({
+          timeout: this.getCandidates(params.useFastModel).length > 1 && candidate.name === "openai" ? 10000 : env.LLM_TIMEOUT_MS
         });
 
         const output = await withRetry(
@@ -159,9 +160,11 @@ export class LlmProvider {
           output: output as z.infer<TSchema>
         };
       } catch (error: any) {
-        // If it's a parsing error or validation error, try manual fallback
-        if (error.name === "SyntaxError" || error.message?.includes("JSON") || error.message?.includes("Unexpected identifier") || error.issues) {
-          logger.warn({ provider: candidate.name }, "Structured output parsing failed, falling back to manual extraction");
+        // If it's a parsing error or validation error, or a specific NVIDIA 500/429, try manual fallback
+        const isNvidiaError = candidate.name === "nvidia_qwen" && (error.message?.includes("500") || error.message?.includes("Something went wrong") || error.message?.includes("Rate limit"));
+        
+        if (error.name === "SyntaxError" || error.message?.includes("JSON") || error.message?.includes("Unexpected identifier") || error.issues || isNvidiaError) {
+          logger.warn({ provider: candidate.name, error: error.message }, "Structured output failed, falling back to manual extraction");
           
           try {
             const result = await this.invokeText({ 
@@ -170,7 +173,7 @@ export class LlmProvider {
               useFastModel: params.useFastModel 
             });
             
-            logger.debug({ text: result.text }, "Manual extraction raw text");
+            if (!result.text) throw new Error("Empty response from LLM");
 
             // Extract JSON from text (fenced or just between brackets)
             const jsonMatch = result.text.match(/\{[\s\S]*\}/);
@@ -182,8 +185,9 @@ export class LlmProvider {
                 output: validated
               };
             }
-          } catch (fallbackError) {
-            logger.error({ fallbackError }, "Manual JSON extraction fallback also failed");
+            throw new Error("No JSON found in response");
+          } catch (fallbackError: any) {
+            logger.error({ fallbackError: fallbackError.message }, "Manual JSON extraction fallback also failed");
           }
         }
 
@@ -208,7 +212,9 @@ export class LlmProvider {
       try {
         const result = await withRetry(
           () =>
-            candidate.model.invoke([
+            candidate.model.withConfig({
+              timeout: this.getCandidates(params.useFastModel).length > 1 && candidate.name === "openai" ? 10000 : env.LLM_TIMEOUT_MS
+            }).invoke([
               new SystemMessage(params.system),
               new HumanMessage(params.user)
             ]),
@@ -222,13 +228,14 @@ export class LlmProvider {
           provider: candidate.name,
           text: extractTextContent(result.content)
         };
-      } catch (error) {
-        logger.warn(
+      } catch (error: any) {
+        logger.error(
           {
             provider: candidate.name,
-            error: error instanceof Error ? error.message : error
+            error: error.message,
+            stack: error.stack
           },
-          "Text LLM provider failed, trying next candidate"
+          "LLM provider invocation failed"
         );
         lastError = error;
       }
