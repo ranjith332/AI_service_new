@@ -16,6 +16,7 @@ export const intentSchema = z.object({
     (val) => (typeof val === "string" ? val.toLowerCase() : val),
     z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary", "book", "export_pdf", "general_knowledge"]).catch("list")
   ).default("list"),
+  operation: z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary", "book"]).default("list"),
   target: z.preprocess(
     (val) => (typeof val === "string" ? val.toLowerCase() : val),
     z.enum([
