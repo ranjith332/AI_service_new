@@ -20,7 +20,12 @@ export class QueryPlannerService {
     prescription: "prescriptions",
     doctor: "doctors",
     medicine: "medicines",
-    user: "users"
+    user: "users",
+    dependent: "dependents",
+    schedule: "schedules",
+    scheduleday: "scheduleDays",
+    doctorholiday: "doctorHolidays",
+    doctorsession: "doctorSessions"
   };
 
   const normalizedTarget = targetMapping[intent.target] || intent.target;
@@ -29,22 +34,26 @@ export class QueryPlannerService {
     normalizedTarget === "prescriptions" ||
     normalizedTarget === "medicines" ||
     normalizedTarget === "doctors" ||
-    normalizedTarget === "patients"
-      ? [normalizedTarget]
-      : ["patients", "prescriptions", "medicines", "doctors"];
+    normalizedTarget === "patients" ||
+    normalizedTarget === "dependents" ||
+    normalizedTarget === "doctorHolidays" ||
+    normalizedTarget === "appointments"
+      ? [normalizedTarget, "schedules", "scheduleDays"]
+      : ["patients", "prescriptions", "medicines", "doctors", "dependents", "schedules", "scheduleDays"];
 
   const runSql =
     intent.needsSql ||
     normalizedTarget === "unknown" ||
-    ["appointments", "patients", "doctors", "medicines", "users"].includes(normalizedTarget) ||
+    ["appointments", "patients", "doctors", "medicines", "users", "dependents", "schedules", "scheduleDays", "doctorHolidays", "doctorSessions"].includes(normalizedTarget) ||
     intent.operation === "latest" ||
     intent.metric !== "none";
 
   const runVector =
     intent.needsVector ||
     intent.operation === "semantic_lookup" ||
-    ["prescriptions", "medicines", "doctors", "patients"].includes(normalizedTarget) ||
-    normalizedTarget === "unknown";
+    (normalizedTarget === "unknown" && !intent.needsSql) ||
+    (["prescriptions", "medicines", "doctors"].includes(normalizedTarget) && 
+     !["list", "aggregate", "latest", "book", "export_pdf"].includes(intent.operation));
 
   const strategy: ExecutionStrategy = runSql && runVector ? "hybrid" : runVector ? "vector" : "sql";
 

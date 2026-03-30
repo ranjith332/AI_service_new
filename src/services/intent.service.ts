@@ -1,38 +1,65 @@
+import { logger } from "../utils/logger.ts";
 import type { QueryIntent } from "./query-schemas.ts";
-import { intentSchema } from "./query-schemas.ts";
+import { intentSchema, intentSchemaRaw } from "./query-schemas.ts";
 import type { LlmProvider } from "../llm/provider.ts";
 
 export class IntentService {
   constructor(private readonly llm: LlmProvider) {}
 
   async classify(tenantId: string, userQuery: string): Promise<{ provider: "openai" | "nvidia_qwen"; intent: QueryIntent }> {
-    const system = [
-      "You classify healthcare analytics queries into a strict schema.",
-      "Return only values grounded in the user request.",
-      "Do not invent identifiers, patients, or filters.",
-      "Assume a shared database where tenant isolation is mandatory and already enforced downstream.",
-      "Use needsVector=true for semantic search over free-text clinical content.",
-      "Use needsSql=true for counts, lists, latest records, names, joins, billing, appointments, or aggregations.",
-      "The result MUST be a flat JSON object with these exact keys: summary (string), operation (list|aggregate|latest|lookup|semantic_lookup|summary), target (appointments|patients|prescriptions|doctors|medicines|users|unknown), patientName (string|null), doctorName (string|null), condition (string|null), metric (none|revenue|appointment_count|doctor_with_most_appointments), timeRange (object with preset: today|yesterday|this_week|this_month|all_time|latest|custom), limit (number), needsSql (boolean), needsVector (boolean), sort (latest|oldest|highest|lowest), confidence (number).",
-      "Do NOT use 'hybrid' as a target. Use a real table name or 'unknown'.",
-      "CRITICAL: Return ONLY the flat JSON object. No conversational filler."
-    ].join(" ");
+    try {
+      const system = [
+        "You classify healthcare analytics queries into a strict schema.",
+        "Classify healthcare analytic queries into the provided JSON schema using these core rules:",
+        "1. Ground all values (summary, names, metrics) in the user request. No invented identifiers.",
+        "2. Operation Mapping: 'book' (for scheduling), 'export_pdf' (for documents), 'lookup' (for slots/tokens/schedules), 'semantic_lookup' (for text search), 'general_knowledge' (greetings, general medical definitions, or common inquiries).",
+        "3. Target Mapping: 'appointments', 'patients', 'prescriptions', 'doctors', 'medicines', 'schedules' (for availability/stats).",
+        "4. PDF Export: Queries about 'pdf of prescription' or 'print report' MUST use operation='export_pdf' and target='prescriptions'. Extract the patient name into 'patientName'.",
+        "5. Mandatory for 'book': requires morning|afternoon|night session. If missing, set needsClarification=true.",
+        "6. Date Resolution: Resolve 'today', 'tomorrow', 'next Monday' based on current date: " + new Date().toISOString().split('T')[0] + ".",
+        "7. Tokens/Slots: Any query about available tokens or doctor availability ALWAYS uses operation='lookup' and target='schedules'.",
+        "8. Handling Greetings and General Questions: Greetings, common talk, or general medical definitions (e.g., 'What is paracetamol?') should be classified as operation='general_knowledge' and target='unknown'.",
+        "9. Output ONLY the JSON object."
+      ].join(" ");
 
-    const user = JSON.stringify({
-      tenant_id: tenantId,
-      user_query: userQuery
-    });
+      const user = JSON.stringify({
+        tenant_id: tenantId,
+        user_query: userQuery
+      });
 
-    const result = await this.llm.invokeStructured(intentSchema, {
-      system,
-      user,
-      schemaName: "DoctorHealixIntent",
-      useFastModel: true
-    });
+      // Use RAW schema for AI interaction (no transforms allowed here)
+      const result = await this.llm.invokeStructured(intentSchemaRaw, {
+        system,
+        user,
+        schemaName: "DoctorHealixIntent",
+        useFastModel: true
+      });
 
-    return {
-      provider: result.provider,
-      intent: result.output
-    };
+      // Use RICH schema for application logic (performs cleanup like lowercase + default catches)
+      const cleanedIntent = intentSchema.parse(result.output);
+
+      return {
+        provider: result.provider,
+        intent: cleanedIntent
+      };
+    } catch (error: any) {
+      logger.error({ error: error.message, userQuery }, "Intent classification failed fundamentally, falling back to general_knowledge");
+      // SAFE FALLBACK: Never throw 500 for a simple intent failure
+      const fallbackIntent: QueryIntent = {
+        summary: userQuery,
+        operation: "general_knowledge",
+        target: "unknown" as any,
+        needsSql: false,
+        needsVector: true, // Default to vector search if we don't know the intent
+        confidence: 0,
+        limit: 20,
+        timeRange: { preset: "all_time" }
+      } as QueryIntent;
+
+      return {
+        provider: "nvidia_qwen", // Assumption
+        intent: fallbackIntent
+      };
+    }
   }
 }

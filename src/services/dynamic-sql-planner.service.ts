@@ -19,6 +19,7 @@ export class DynamicSqlPlannerService {
       "Keep limit conservative and at most 100.",
       "Use aggregates only when the user asks for counts, totals, averages, minima, or maxima.",
       "If the query asks for many columns, still keep the selected columns focused and relevant.",
+      "CRITICAL: Some tables (e.g. dependents, schedule_days) lack a direct tenant_id. You MUST join them with a parent table that HAS a tenant_id (e.g. dependents join patients on patient_id, schedule_days join schedules on schedule_id) to ensure isolation.",
       "CRITICAL: Return ONLY valid JSON. No introductory text or conversational filler."
     ].join(" ");
 

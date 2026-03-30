@@ -11,7 +11,7 @@ import { LlmProvider } from "../src/llm/provider.ts";
 import { logger } from "../src/utils/logger.ts";
 import { QdrantService } from "../src/vector/qdrant.ts";
 
-type SupportedTable = "patients" | "prescriptions" | "medicines" | "doctors";
+type SupportedTable = "patients" | "prescriptions" | "medicines" | "doctors" | "dependents" | "schedules" | "scheduleDays" | "doctorHolidays" | "doctorSessions";
 
 interface IngestionState {
   [key: string]: string;
@@ -69,7 +69,7 @@ async function main() {
     throw new Error("OPENAI_API_KEY is required for ingestion embeddings.");
   }
 
-  const tables: SupportedTable[] = table ? [table] : ["patients", "prescriptions", "medicines", "doctors"];
+  const tables: SupportedTable[] = table ? [table] : ["patients", "prescriptions", "medicines", "doctors", "dependents", "schedules", "scheduleDays", "doctorHolidays", "doctorSessions"];
 
   for (const tableName of tables) {
     const cursorKey = `${tenantId ?? "all"}:${tableName}`;
@@ -158,6 +158,98 @@ async function main() {
             'Salt Composition: ', COALESCE(${mapping.saltComposition}, 'N/A'), '\n',
             'Quantity: ', ${mapping.quantity}, ' (Available: ', ${mapping.availableQuantity}, ')'
           ) AS body_text,
+          ${mapping.updatedAt} AS updated_at
+        FROM ${mapping.table}
+        WHERE ${mapping.updatedAt} >= ?
+      `;
+      if (tenantId) {
+        sql += ` AND ${mapping.tenant} = ?`;
+        values.push(tenantId);
+      }
+    }
+
+    if (tableName === "dependents") {
+      const mapping = schema.dependents;
+      sql = `
+        SELECT
+          ${mapping.id} AS record_id,
+          (SELECT tenant_id FROM patients WHERE id = ${mapping.table}.patient_id LIMIT 1) AS tenant_id,
+          ${mapping.patient} AS patient_id,
+          CONCAT(${mapping.firstName}, ' ', ${mapping.lastName}) AS title,
+          CONCAT('Relation: ', ${mapping.relation}, ', Age: ', COALESCE(${mapping.age}, 'N/A'), ', Gender: ', ${mapping.gender}) AS body_text,
+          ${mapping.updatedAt} AS updated_at
+        FROM ${mapping.table}
+        WHERE ${mapping.updatedAt} >= ?
+      `;
+    }
+
+    if (tableName === "schedules") {
+      const mapping = schema.schedules;
+      sql = `
+        SELECT
+          ${mapping.id} AS record_id,
+          ${mapping.tenant} AS tenant_id,
+          CONCAT('Schedule for Doctor #', ${mapping.doctor}) AS title,
+          CONCAT('Type: ', ${mapping.scheduleType}, ', Per Patient Time: ', ${mapping.perPatientTime}) AS body_text,
+          ${mapping.updatedAt} AS updated_at
+        FROM ${mapping.table}
+        WHERE ${mapping.updatedAt} >= ?
+      `;
+      if (tenantId) {
+        sql += ` AND ${mapping.tenant} = ?`;
+        values.push(tenantId);
+      }
+    }
+
+    if (tableName === "scheduleDays") {
+      const mapping = schema.scheduleDays;
+      sql = `
+        SELECT
+          sd.${mapping.id} AS record_id,
+          s.tenant_id AS tenant_id,
+          CONCAT('Schedule Day: ', sd.${mapping.availableOn}, ' for Doctor #', sd.${mapping.doctor}) AS title,
+          CONCAT(
+            'Available: ', sd.${mapping.availableFrom}, ' to ', sd.${mapping.availableTo}, '\n',
+            'Max Tokens: ', COALESCE(sd.${mapping.maxTokens}, 0), ', Morning: ', COALESCE(sd.${mapping.morningTokens}, 0),
+            ', Afternoon: ', COALESCE(sd.${mapping.afternoonTokens}, 0), ', Night: ', COALESCE(sd.${mapping.nightTokens}, 0)
+          ) AS body_text,
+          sd.${mapping.updatedAt} AS updated_at
+        FROM ${mapping.table} sd
+        JOIN schedules s ON s.id = sd.${mapping.schedule}
+        WHERE sd.${mapping.updatedAt} >= ?
+      `;
+      if (tenantId) {
+        sql += ` AND s.tenant_id = ?`;
+        values.push(tenantId);
+      }
+    }
+
+    if (tableName === "doctorHolidays") {
+      const mapping = schema.doctorHolidays;
+      sql = `
+        SELECT
+          ${mapping.id} AS record_id,
+          ${mapping.tenant} AS tenant_id,
+          ${mapping.name} AS title,
+          CONCAT('Holiday Date: ', ${mapping.date}, ' for Doctor #', ${mapping.doctor}) AS body_text,
+          ${mapping.updatedAt} AS updated_at
+        FROM ${mapping.table}
+        WHERE ${mapping.updatedAt} >= ?
+      `;
+      if (tenantId) {
+        sql += ` AND ${mapping.tenant} = ?`;
+        values.push(tenantId);
+      }
+    }
+
+    if (tableName === "doctorSessions") {
+      const mapping = schema.doctorSessions;
+      sql = `
+        SELECT
+          ${mapping.id} AS record_id,
+          ${mapping.tenant} AS tenant_id,
+          CONCAT('Doctor Session: ', ${mapping.sessionStatus}, ' on ', ${mapping.date}) AS title,
+          CONCAT('Reason: ', COALESCE(${mapping.delayReason}, 'None'), ', Delay: ', COALESCE(${mapping.delayTime}, '0')) AS body_text,
           ${mapping.updatedAt} AS updated_at
         FROM ${mapping.table}
         WHERE ${mapping.updatedAt} >= ?

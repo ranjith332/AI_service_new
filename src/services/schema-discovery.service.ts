@@ -70,13 +70,11 @@ export class SchemaDiscoveryService {
     const schema: DiscoveredSchema = {};
 
     for (const [tableName, columns] of grouped.entries()) {
-      if (!columns.some((column) => column.name === "tenant_id")) {
-        continue;
-      }
+      const tenantColumn = columns.find((c) => c.name === "tenant_id");
 
       schema[tableName] = {
         name: tableName,
-        tenant: "tenant_id",
+        tenant: tenantColumn ? "tenant_id" : (null as unknown as string),
         columns
       };
     }
