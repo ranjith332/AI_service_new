@@ -1,3 +1,4 @@
+import { HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
 import { logger } from "../utils/logger.ts";
 import type { QueryIntent } from "./query-schemas.ts";
 import { intentSchema, intentSchemaRaw } from "./query-schemas.ts";
@@ -6,7 +7,7 @@ import type { LlmProvider } from "../llm/provider.ts";
 export class IntentService {
   constructor(private readonly llm: LlmProvider) {}
 
-  async classify(tenantId: string, userQuery: string): Promise<{ provider: "openai" | "nvidia_qwen"; intent: QueryIntent }> {
+  async classify(tenantId: string, userQuery: string, history: BaseMessage[] = []): Promise<{ provider: "openai" | "nvidia_qwen"; intent: QueryIntent }> {
     try {
       const system = [
         "You classify healthcare analytics queries into a strict schema.",
@@ -22,9 +23,12 @@ export class IntentService {
         "9. Output ONLY the JSON object."
       ].join(" ");
 
+      const historyContext = history.map(m => `${m._getType()}: ${m.content}`).join("\n");
+
       const user = JSON.stringify({
         tenant_id: tenantId,
-        user_query: userQuery
+        user_query: userQuery,
+        recent_history: historyContext
       });
 
       // Use RAW schema for AI interaction (no transforms allowed here)
@@ -43,21 +47,55 @@ export class IntentService {
         intent: cleanedIntent
       };
     } catch (error: any) {
-      logger.error({ error: error.message, userQuery }, "Intent classification failed fundamentally, falling back to general_knowledge");
-      // SAFE FALLBACK: Never throw 500 for a simple intent failure
-      const fallbackIntent: QueryIntent = {
-        summary: userQuery,
-        operation: "general_knowledge",
-        target: "unknown" as any,
-        needsSql: false,
-        needsVector: true, // Default to vector search if we don't know the intent
-        confidence: 0,
-        limit: 20,
-        timeRange: { preset: "all_time" }
-      } as QueryIntent;
+      logger.error({ error: error.message, userQuery }, "Intent classification failed fundamentally, falling back to rule detection");
+
+      const q = userQuery.toLowerCase();
+      
+      // Robust detection for "doctor" or names
+      const isDoctorQuery = q.includes("doctor") || q.includes("dr.") || /\b(dr|doc)\b/i.test(q);
+      const isDescriptiveQuery = q.includes("tell me") || q.includes("about") || q.includes("experience") || q.includes("specialty");
+      const possibleNameMatch = userQuery.match(/(?:doctor|dr\.)\s+([a-zA-Z\s]+)/i);
+
+      let fallbackIntent: QueryIntent;
+
+      if (isDoctorQuery || isDescriptiveQuery || possibleNameMatch) {
+        fallbackIntent = {
+          summary: userQuery,
+          operation: "semantic_lookup",
+          target: "doctors",
+          doctorName: possibleNameMatch?.[1]?.trim(),
+          needsSql: true,
+          needsVector: true, // ALWAYS vector for biographies
+          confidence: 0.5,
+          limit: 20,
+          timeRange: { preset: "all_time" }
+        } as QueryIntent;
+      } else if (q.includes("appointment")) {
+        fallbackIntent = {
+          summary: userQuery,
+          operation: "lookup",
+          target: "appointments",
+          needsSql: true,
+          needsVector: false,
+          confidence: 0.5,
+          limit: 20,
+          timeRange: { preset: "all_time" }
+        } as QueryIntent;
+      } else {
+        fallbackIntent = {
+          summary: userQuery,
+          operation: "general_knowledge",
+          target: "unknown" as any,
+          needsSql: false,
+          needsVector: true,
+          confidence: 0,
+          limit: 20,
+          timeRange: { preset: "all_time" }
+        } as QueryIntent;
+      }
 
       return {
-        provider: "nvidia_qwen", // Assumption
+        provider: "rule_based" as any,
         intent: fallbackIntent
       };
     }

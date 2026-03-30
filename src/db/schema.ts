@@ -100,3 +100,32 @@ export const tokenSubscriptions = mysqlTable(
     subscriptionUniqueIdx: uniqueIndex("token_subscriptions_subscription_unique_idx").on(table.subscriptionId)
   })
 );
+
+export const aiChatSessions = mysqlTable(
+  "ai_chat_sessions",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    tenantId: varchar("tenant_id", { length: 128 }).notNull(),
+    title: varchar("title", { length: 255 }).notNull().default("New Chat"),
+    createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { mode: "string" }).notNull().defaultNow().onUpdateNow()
+  },
+  (table) => ({
+    tenantIdx: uniqueIndex("ai_sessions_tenant_idx").on(table.tenantId, table.id)
+  })
+);
+
+export const aiChatMessages = mysqlTable(
+  "ai_chat_messages",
+  {
+    id: varchar("id", { length: 36 }).primaryKey(),
+    tenantId: varchar("tenant_id", { length: 128 }).notNull(),
+    sessionId: varchar("session_id", { length: 36 }).notNull(),
+    role: mysqlEnum("role", ["user", "assistant"]).notNull(),
+    content: json("content").notNull(),
+    createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow()
+  },
+  (table) => ({
+    sessionIdx: uniqueIndex("ai_messages_session_idx").on(table.sessionId, table.id)
+  })
+);

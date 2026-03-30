@@ -7,7 +7,8 @@ export const queryBodySchema = z.object({
     .min(1)
     .max(128)
     .regex(/^[A-Za-z0-9_-]+$/, "tenant_id may only contain letters, numbers, underscores, and hyphens"),
-  user_query: z.string().trim().min(3).max(1000)
+  user_query: z.string().trim().min(3).max(1000),
+  session_id: z.string().optional()
 });
 
 export const intentSchema = z.object({

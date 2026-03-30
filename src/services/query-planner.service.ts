@@ -41,27 +41,37 @@ export class QueryPlannerService {
       ? [normalizedTarget, "schedules", "scheduleDays"]
       : ["patients", "prescriptions", "medicines", "doctors", "dependents", "schedules", "scheduleDays"];
 
-  const runSql =
+    let runSql =
     intent.needsSql ||
     normalizedTarget === "unknown" ||
     ["appointments", "patients", "doctors", "medicines", "users", "dependents", "schedules", "scheduleDays", "doctorHolidays", "doctorSessions"].includes(normalizedTarget) ||
     intent.operation === "latest" ||
     intent.metric !== "none";
 
-  const runVector =
+    let runVector =
     intent.needsVector ||
     intent.operation === "semantic_lookup" ||
     (normalizedTarget === "unknown" && !intent.needsSql) ||
     (["prescriptions", "medicines", "doctors"].includes(normalizedTarget) && 
      !["list", "aggregate", "latest", "book", "export_pdf"].includes(intent.operation));
 
-  const strategy: ExecutionStrategy = runSql && runVector ? "hybrid" : runVector ? "vector" : "sql";
 
-  return {
-    strategy,
-    runSql,
-    runVector,
-    vectorTables
-  };
+    // FORCE SQL FOR KNOWN TARGETS
+    if (normalizedTarget === "doctors" || normalizedTarget === "appointments") {
+      runSql = true;
+      // Only disable vector if not specifically requested (prioritizes "tell me about" / semantic_lookup)
+      if (!intent.needsVector && intent.operation !== "semantic_lookup") {
+        runVector = false;
+      }
+    }
+
+    const strategy: ExecutionStrategy = runSql && runVector ? "hybrid" : runVector ? "vector" : "sql";
+
+    return {
+      strategy,
+      runSql,
+      runVector,
+      vectorTables
+    };
   }
 }

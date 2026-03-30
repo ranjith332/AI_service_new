@@ -19,6 +19,10 @@ import { BookingService } from "./booking.service.ts";
 import { PdfService } from "./pdf.service.ts";
 import { UnsupportedQueryError } from "../utils/errors.ts";
 import { logger } from "../utils/logger.ts";
+import { ChatSessionService } from "./chat-session.service.ts";
+import { SqlChatMessageHistory } from "./sql-chat-history.ts";
+import type { DatabaseClient } from "../db/client.ts";
+import { HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
 
 interface PipelineContext {
   tenantId: string;
@@ -32,6 +36,7 @@ interface PipelineContext {
   sqlMode?: "mapped" | "dynamic";
   answer?: string;
   pdfBase64?: string;
+  history?: BaseMessage[];
 }
 
 export class AiQueryService {
@@ -48,15 +53,33 @@ export class AiQueryService {
     private readonly cache: QueryCacheService | null,
     private readonly sessionService: SessionService,
     private readonly bookingService: BookingService,
-    private readonly pdfService: PdfService
+    private readonly pdfService: PdfService,
+    private readonly chatSessionService: ChatSessionService,
+    private readonly db: DatabaseClient
   ) {}
 
   async execute(body: QueryBody) {
+    let sessionId = body.session_id;
+    let history: BaseMessage[] = [];
+
+    // 1. Ensure Session exists and load/create as needed
+    if (!sessionId) {
+      const newSession = await this.chatSessionService.createSession(body.tenant_id, body.user_query);
+      sessionId = newSession.id;
+    } else {
+      await this.chatSessionService.updateLastActivity(body.tenant_id, sessionId);
+    }
+
+    // 2. Initialize SQL-backed history
+    const historyStore = new SqlChatMessageHistory(this.db, body.tenant_id, sessionId);
+    history = await historyStore.getMessages();
+
     const cacheKey = `${body.tenant_id}:${body.user_query.toLowerCase()}`;
     const cached = this.cache?.get<unknown>(cacheKey);
     if (cached) {
       return {
         ...(cached as Record<string, unknown>),
+        session_id: sessionId,
         meta: {
           ...((cached as { meta?: Record<string, unknown> }).meta ?? {}),
           cached: true
@@ -66,21 +89,51 @@ export class AiQueryService {
 
     const pipeline = RunnableSequence.from<PipelineContext, any>([
       RunnableLambda.from(async (input: PipelineContext) => {
-        const classified = await this.intentService.classify(input.tenantId, input.userQuery);
+        const classified = await this.intentService.classify(input.tenantId, input.userQuery, input.history);
+        let intent = classified.intent;
+        const q = input.userQuery.toLowerCase();
+
+        // ✅ Override BAD INTENT (CRITICAL FIX)
+        if (
+          intent.target === "unknown" &&
+          (q.includes("doctor") || q.includes("dr") || q.includes("raju"))
+        ) {
+          intent.target = "doctors";
+          intent.operation = "semantic_lookup" as any;
+          intent.needsSql = true;
+          intent.needsVector = true;
+          
+          // Eager name extraction from query
+          let docName = input.userQuery.replace(/tell me about|who is|what is|info on|details of|search for|show me|find doctor|doctor|dr\.|dr|about|give me/gi, "").trim();
+          
+          if (!docName || docName.length < 2) {
+             const docMatch = input.userQuery.match(/(?:doctor|dr\.|dr)\s+([a-zA-Z\s]+)/i);
+             if (docMatch?.[1]) docName = docMatch[1].trim();
+          }
+
+          if (docName) {
+            intent.doctorName = docName.trim();
+            intent.summary = docName.trim();
+          }
+          
+          logger.info({ userQuery: input.userQuery, extractedName: docName }, "Overriding 'unknown' intent with 'doctors' logic");
+        }
         
         // Handle Clarification
-        if (classified.intent.operation === "book" && classified.intent.needsClarification) {
+        if (intent.operation === "book" && intent.needsClarification) {
            return {
              ...input,
-             intent: classified.intent,
+             intent,
              provider: classified.provider,
-             answer: classified.intent.clarificationMessage ?? "I need more information to book your appointment. What is your name?"
+             answer: intent.clarificationMessage ?? "I need more information to book your appointment. What is your name?"
            };
         }
 
+        logger.info({ intent, provider: classified.provider }, "Intent Classified");
+
         return {
           ...input,
-          intent: classified.intent,
+          intent,
           provider: classified.provider
         };
       }),
@@ -114,7 +167,7 @@ export class AiQueryService {
                     const booking = await this.bookingService.validateAndBook({
                         tenantId: input.tenantId,
                         name: patientName,
-                        doctorName: doctorName,
+                        doctorName: doctorName || "",
                         session: details.session as any,
                         token: details.token ?? undefined,
                         date
@@ -129,7 +182,7 @@ export class AiQueryService {
                 } else {
                     // Autonomous Session Lookup for availability
                     logger.info({ doctorName }, "Fetching HMS synchronized availability");
-                    const availableSessions = await this.bookingService.getAvailableSessions(input.tenantId, doctorName, date);
+                    const availableSessions = await this.bookingService.getAvailableSessions(input.tenantId, doctorName || "", date);
                     logger.info({ sessionsCount: availableSessions.length }, "Available sessions found");
 
                     if (availableSessions.length > 0) {
@@ -169,6 +222,7 @@ export class AiQueryService {
         }
 
         const plan = this.planner.plan(intent);
+        logger.info({ strategy: plan.strategy, runSql: plan.runSql, runVector: plan.runVector, target: intent.target }, "Execution Plan Generated");
 
         let [sqlData, vectorRows] = await Promise.all([
           plan.runSql
@@ -194,17 +248,16 @@ export class AiQueryService {
         }
 
         // DEEP DIVE: For individual doctor lookups, append their availability/sessions to "all details"
-        const doctorName = intent.doctorName;
-        if (intent.target === "doctors" && doctorName && sqlData.rows.length > 0) {
+        if (intent.target === "doctors" && intent.doctorName && sqlData.rows.length > 0) {
             const dr = sqlData.rows[0];
             const date = new Date().toISOString().split("T")[0];
             try {
-                const sessions = await this.bookingService.getAvailableSessions(input.tenantId, doctorName, date);
+                const sessions = await this.bookingService.getAvailableSessions(input.tenantId, intent.doctorName as string, date);
                 if (sessions.length > 0) {
                     (dr as any).available_sessions_today = sessions.join(", ");
                 }
             } catch (e) {
-                logger.warn({ error: e, doctor: doctorName }, "Doctor session deep-dive failed");
+                logger.warn({ error: e, doctor: intent.doctorName }, "Doctor session deep-dive failed");
             }
         }
 
@@ -305,7 +358,8 @@ export class AiQueryService {
           intent: input.intent!,
           sqlRows: input.sqlRows ?? [],
           vectorRows: input.vectorRows ?? [],
-          timeZone: env.APP_TIMEZONE
+          timeZone: env.APP_TIMEZONE,
+          history: input.history
         });
 
         return {
@@ -318,8 +372,14 @@ export class AiQueryService {
 
     const result = await pipeline.invoke({
       tenantId: body.tenant_id,
-      userQuery: body.user_query
+      userQuery: body.user_query,
+      sessionId,
+      history
     });
+
+    // 3. Persist the current interaction to SQL history
+    await historyStore.addMessage(new HumanMessage(body.user_query));
+    await historyStore.addMessage(new AIMessage(result.answer));
 
     if (result.intent?.operation === "export_pdf") {
       return {
@@ -327,12 +387,14 @@ export class AiQueryService {
         patient_name: result.intent.patientName,
         answer: result.answer,
         pdf_base64: result.pdfBase64,
-        tenant_id: body.tenant_id
+        tenant_id: body.tenant_id,
+        session_id: sessionId
       };
     }
 
     const response = {
       tenant_id: body.tenant_id,
+      session_id: sessionId,
       answer: result.answer,
       data: {
         sql: {

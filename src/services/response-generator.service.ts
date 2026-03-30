@@ -1,3 +1,4 @@
+import type { BaseMessage } from "@langchain/core/messages";
 import type { QueryIntent } from "./query-schemas.ts";
 import type { LlmProvider } from "../llm/provider.ts";
 
@@ -8,6 +9,7 @@ interface ResponseParams {
   sqlRows: unknown[];
   vectorRows: unknown[];
   timeZone: string;
+  history?: BaseMessage[];
 }
 
 export class ResponseGeneratorService {
@@ -91,10 +93,13 @@ export class ResponseGeneratorService {
     const sqlText = toTextFormat(safeSQLRows, "DATABASE_RESULTS");
     const vectorText = toTextFormat(safeVectorRows, "KNOWLEDGE_BASE_RESULTS");
 
+    const historyContext = params.history?.map(m => `${m._getType()}: ${m.content}`).join("\n") || "No history.";
+
     // 🔥 Absolute stable text format instead of complex JSON
     const userPayload = [
       `USER_QUERY: ${params.userQuery}`,
-      `INTENT: ${params.intent}`,
+      `RECENT_HISTORY: ${historyContext}`,
+      `INTENT: ${params.intent.summary || "no summary"}`,
       `TIMEZONE: ${params.timeZone}`,
       `TENANT_ID: ${params.tenantId}`,
       "",
@@ -116,11 +121,38 @@ export class ResponseGeneratorService {
     } catch (error: any) {
       console.error("LLM PRIMARY FAILED. Reason:", error.message);
 
-      // Fallback for extreme stability
+      // Robust fallback: if SQL data is available, format it manually
+      if (safeSQLRows.length > 0) {
+        return {
+          provider: "openai", // Mark as fallback
+          answer: this.formatDataFallback(safeSQLRows, params.intent.target || "system")
+        };
+      }
+
+      // Final fallback for extreme stability
       return {
         provider: "openai",
         answer: "I encountered a technical issue while processing the records. Please try asking again in a simpler way or check back in a moment.",
       };
     }
+  }
+
+  private formatDataFallback(rows: any[], target: string): string {
+    const intro = `The natural language service is temporarily unavailable, but I have retrieved the following ${target} record(s) for you from the system:\n\n`;
+    
+    const formattedRows = rows.map((row, index) => {
+      const details = Object.entries(row)
+        .filter(([k]) => !k.startsWith("_") && k !== "id" && k !== "tenant_id")
+        .map(([k, v]) => {
+          // Clean up key name
+          const displayKey = k.split("_").map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+          return `* **${displayKey}**: ${v}`;
+        })
+        .join("\n");
+      
+      return `### Record ${index + 1}\n${details}`;
+    }).join("\n\n");
+
+    return intro + formattedRows + "\n\n(Note: This is a direct record summary. You can try asking again in a moment for a conversational answer.)";
   }
 }

@@ -158,12 +158,39 @@ export class BookingService {
     return res.rows[0]?.insertId;
   }
 
-  private async findDoctor(tenantId: string, name: string) {
+  public async findDoctor(tenantId: string, name: string) {
     const s = this.schema.doctors;
+    const u = this.schema.users;
+    const parts = name.trim().split(/\s+/);
+    const firstName = parts[0] || "";
+    const lastName = parts.length > 1 ? parts.slice(1).join(" ") : firstName;
+
     const res = await this.db.query<{ id: number }>({
-      text: `SELECT ${s.id} AS id FROM ${s.table} WHERE ${s.tenant} = ? AND (LOWER(CONCAT(${s.firstName}, ' ', ${s.lastName})) LIKE ?) LIMIT 1`,
-      values: [tenantId, `%${name.toLowerCase()}%`],
-      description: "find_doctor"
+      text: `
+        SELECT d.${s.id} AS id 
+        FROM ${s.table} d
+        LEFT JOIN ${u.table} u ON u.${u.id} = d.${s.user}
+        WHERE d.${s.tenant} = ? 
+          AND (
+            LOWER(TRIM(u.${u.firstName})) LIKE ? OR 
+            LOWER(TRIM(u.${u.lastName})) LIKE ? OR 
+            LOWER(CONCAT(TRIM(u.${u.firstName}), ' ', TRIM(u.${u.lastName}))) LIKE ? OR
+            (LOWER(TRIM(u.${u.firstName})) LIKE ? AND LOWER(TRIM(u.${u.lastName})) LIKE ?) OR
+            LOWER(TRIM(d.${s.firstName})) LIKE ? OR 
+            LOWER(TRIM(d.${s.lastName})) LIKE ? OR
+            LOWER(CONCAT(TRIM(d.${s.firstName}), ' ', TRIM(d.${s.lastName}))) LIKE ? OR
+            (LOWER(TRIM(d.${s.firstName})) LIKE ? AND LOWER(TRIM(d.${s.lastName})) LIKE ?)
+          )
+        LIMIT 1
+      `,
+      values: [
+        tenantId,
+        `%${name.toLowerCase()}%`, `%${name.toLowerCase()}%`, `%${name.toLowerCase()}%`,
+        `%${firstName.toLowerCase()}%`, `%${lastName.toLowerCase()}%`,
+        `%${name.toLowerCase()}%`, `%${name.toLowerCase()}%`, `%${name.toLowerCase()}%`,
+        `%${firstName.toLowerCase()}%`, `%${lastName.toLowerCase()}%`
+      ],
+      description: "find_doctor_joined_robust"
     });
     return res.rows[0];
   }
