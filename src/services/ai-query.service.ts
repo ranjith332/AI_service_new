@@ -92,7 +92,7 @@ export class AiQueryService {
         // Handle Booking and Appointment Discovery Execution
         const lowerQuery = input.userQuery.toLowerCase();
         const hasAvailabilityKeyword = lowerQuery.includes("token") || lowerQuery.includes("slot") || lowerQuery.includes("available");
-        const isAvailabilityQuery = ((intent.target === "appointments" || intent.target === "schedules" || intent.target === "scheduledays" || intent.target === "doctors" || intent.target === "unknown") && (intent.doctorName || hasAvailabilityKeyword));
+        const isAvailabilityQuery = ((intent.target === "schedules" || intent.target === "scheduledays" || hasAvailabilityKeyword) && (intent.doctorName || hasAvailabilityKeyword));
 
         logger.info({ isAvailabilityQuery, hasAvailabilityKeyword, target: intent.target }, "Evaluating availability trigger");
 
@@ -105,7 +105,7 @@ export class AiQueryService {
             // Robust doctor name fallback
             if (!doctorName && hasAvailabilityKeyword) {
                 const docMatch = input.userQuery.match(/(?:doctor|dr\.)\s+([a-z\s]+?)(?:\s+for|today|tomorrow|on|$)/i);
-                if (docMatch) doctorName = docMatch[1].trim();
+                if (docMatch && docMatch[1]) doctorName = docMatch[1].trim();
             }
 
             if (doctorName) {
@@ -170,7 +170,7 @@ export class AiQueryService {
 
         const plan = this.planner.plan(intent);
 
-        const [sqlData, vectorRows] = await Promise.all([
+        let [sqlData, vectorRows] = await Promise.all([
           plan.runSql
             ? this.executeSqlPlan(input, plan)
             : Promise.resolve({ rows: [] as QueryResultRow[], mode: undefined as "mapped" | "dynamic" | undefined }),
@@ -182,6 +182,31 @@ export class AiQueryService {
               })
             : Promise.resolve([] as unknown[])
         ]);
+
+        // AUTOMATIC FALLBACK: If SQL & initial Vector results are empty, trigger a broader vector search as a safety net
+        if (sqlData.rows.length === 0 && vectorRows.length === 0) {
+            logger.info({ userQuery: input.userQuery, originalPlan: plan.strategy }, "No direct matches found. Triggering semantic fallback.");
+            vectorRows = await this.vectorSearch.search({
+                tenantId: input.tenantId,
+                query: input.userQuery,
+                tableNames: plan.vectorTables.length > 0 ? plan.vectorTables : ["patients", "prescriptions", "medicines", "doctors"]
+            });
+        }
+
+        // DEEP DIVE: For individual doctor lookups, append their availability/sessions to "all details"
+        const doctorName = intent.doctorName;
+        if (intent.target === "doctors" && doctorName && sqlData.rows.length > 0) {
+            const dr = sqlData.rows[0];
+            const date = new Date().toISOString().split("T")[0];
+            try {
+                const sessions = await this.bookingService.getAvailableSessions(input.tenantId, doctorName, date);
+                if (sessions.length > 0) {
+                    (dr as any).available_sessions_today = sessions.join(", ");
+                }
+            } catch (e) {
+                logger.warn({ error: e, doctor: doctorName }, "Doctor session deep-dive failed");
+            }
+        }
 
         return {
           ...input,
@@ -369,7 +394,7 @@ export class AiQueryService {
       };
     } catch (error) {
       if (error instanceof ZodError) {
-        logger.error({ error: error.errors, userQuery: input.userQuery }, "Dynamic SQL plan validation failed. Falling back to conversational response.");
+        logger.error({ error: error.issues, userQuery: input.userQuery }, "Dynamic SQL plan validation failed. Falling back to conversational response.");
       } else {
         logger.error({ error: error instanceof Error ? error.message : error, userQuery: input.userQuery }, "SQL execution failed. Falling back to conversational response.");
       }

@@ -440,9 +440,9 @@ export class SqlBuilderService {
     const where = [`p.${patients.tenant} = ?`];
 
     if (intent.patientName) {
-      where.push(`(LOWER(p.${patients.firstName}) LIKE ? OR LOWER(u.${users.firstName}) LIKE ? OR LOWER(p.${patients.lastName}) LIKE ? OR LOWER(u.${users.lastName}) LIKE ?)`);
+      where.push(`(LOWER(p.${patients.firstName}) LIKE ? OR LOWER(p.${patients.lastName}) LIKE ? OR LOWER(CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName})) LIKE ? OR LOWER(u.${users.firstName}) LIKE ? OR LOWER(u.${users.lastName}) LIKE ? OR LOWER(CONCAT(u.${users.firstName}, ' ', u.${users.lastName})) LIKE ?)`);
       const namePattern = `%${intent.patientName.toLowerCase()}%`;
-      values.push(namePattern, namePattern, namePattern, namePattern);
+      values.push(namePattern, namePattern, namePattern, namePattern, namePattern, namePattern);
     }
 
     values.push(intent.limit);
@@ -508,9 +508,9 @@ export class SqlBuilderService {
     const where = [`d.${doctors.tenant} = ?`];
 
     if (intent.doctorName) {
-      where.push(`(LOWER(d.${doctors.firstName}) LIKE ? OR LOWER(d.${doctors.lastName}) LIKE ? OR LOWER(u.${users.firstName}) LIKE ? OR LOWER(u.${users.lastName}) LIKE ?)`);
+      where.push(`(LOWER(d.${doctors.firstName}) LIKE ? OR LOWER(d.${doctors.lastName}) LIKE ? OR LOWER(CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName})) LIKE ? OR LOWER(u.${users.firstName}) LIKE ? OR LOWER(u.${users.lastName}) LIKE ? OR LOWER(CONCAT(u.${users.firstName}, ' ', u.${users.lastName})) LIKE ?)`);
       const namePattern = `%${intent.doctorName.toLowerCase()}%`;
-      values.push(namePattern, namePattern, namePattern, namePattern);
+      values.push(namePattern, namePattern, namePattern, namePattern, namePattern, namePattern);
     }
 
     values.push(intent.limit);
@@ -521,7 +521,14 @@ export class SqlBuilderService {
           d.${doctors.id} AS doctor_id,
           COALESCE(CONCAT(u.${users.firstName}, ' ', u.${users.lastName}), CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName})) AS doctor_name,
           d.${doctors.specialty} AS specialist,
-          d.${doctors.designation} AS designation
+          d.${doctors.designation} AS designation${intent.doctorName ? `,
+          d.${doctors.qualification} AS qualification,
+          d.${doctors.phone} AS phone,
+          d.${doctors.email} AS email,
+          d.${doctors.gender} AS gender,
+          d.${doctors.dob} AS dob,
+          d.${doctors.appointmentCharge} AS consultation_charge,
+          d.${doctors.description} AS biography` : "" }
         FROM ${doctors.table} d
         LEFT JOIN ${users.table} u ON u.${users.id} = d.${doctors.user}
         WHERE ${where.join(" AND ")}
@@ -542,15 +549,15 @@ export class SqlBuilderService {
     const where = [`rx.${prescriptions.tenant} = ?`];
 
     if (intent.patientName) {
-      where.push(`(LOWER(p.${patients.firstName}) LIKE ? OR LOWER(p.${patients.lastName}) LIKE ? OR LOWER(CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName})) LIKE ? OR LOWER(pu.${users.firstName}) LIKE ? OR LOWER(pu.${users.lastName}) LIKE ?)`);
+      where.push(`(LOWER(p.${patients.firstName}) LIKE ? OR LOWER(p.${patients.lastName}) LIKE ? OR LOWER(CONCAT(p.${patients.firstName}, ' ', p.${patients.lastName})) LIKE ? OR LOWER(pu.${users.firstName}) LIKE ? OR LOWER(pu.${users.lastName}) LIKE ? OR LOWER(CONCAT(pu.${users.firstName}, ' ', pu.${users.lastName})) LIKE ?)`);
       const namePattern = `%${intent.patientName.toLowerCase()}%`;
-      values.push(namePattern, namePattern, namePattern, namePattern, namePattern);
+      values.push(namePattern, namePattern, namePattern, namePattern, namePattern, namePattern);
     }
 
     if (intent.doctorName) {
-      where.push(`(LOWER(d.${doctors.firstName}) LIKE ? OR LOWER(d.${doctors.lastName}) LIKE ? OR LOWER(CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName})) LIKE ? OR LOWER(du.${users.firstName}) LIKE ? OR LOWER(du.${users.lastName}) LIKE ?)`);
+      where.push(`(LOWER(d.${doctors.firstName}) LIKE ? OR LOWER(d.${doctors.lastName}) LIKE ? OR LOWER(CONCAT(d.${doctors.firstName}, ' ', d.${doctors.lastName})) LIKE ? OR LOWER(du.${users.firstName}) LIKE ? OR LOWER(du.${users.lastName}) LIKE ? OR LOWER(CONCAT(du.${users.firstName}, ' ', du.${users.lastName})) LIKE ?)`);
       const namePattern = `%${intent.doctorName.toLowerCase()}%`;
-      values.push(namePattern, namePattern, namePattern, namePattern, namePattern);
+      values.push(namePattern, namePattern, namePattern, namePattern, namePattern, namePattern);
     }
 
     values.push(intent.limit);

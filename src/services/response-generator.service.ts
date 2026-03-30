@@ -20,7 +20,7 @@ export class ResponseGeneratorService {
     // 🔥 Smaller + cleaner system prompt
     const system = [
       "You are Doctor Healix AI assistant.",
-      "Provide clean, professional, human-readable answers based only on given data.",
+      "Provide clean, professional, human-readable answers. Prioritize given records, but use your own knowledge for general or medical definitions if no data is found.",
       `Today is ${new Date().toLocaleDateString("en-US", {
         timeZone: params.timeZone,
       })}.`,
@@ -28,8 +28,7 @@ export class ResponseGeneratorService {
       "Translate values:",
       "0=Pending, 1=Completed, 4=Cancelled.",
       "Never mention SQL, IDs, or JSON.",
-      "If no data found, say politely.",
-      "If general question, answer normally.",
+      "If no data matches the specific query in the provided records, answer normally from your own knowledge base (especially for general medical terms or definitions).",
     ].join(" ");
 
     // 🔥 CRAG-lite relevance filter
@@ -46,13 +45,13 @@ export class ResponseGeneratorService {
 
       return rows
         .filter((r) => isRelevant(r, query)) // CRAG filter
-        .slice(0, 15) // HIGHER LIMIT: 15 rows
+        .slice(0, 20) // HIGHER LIMIT: 20 rows
         .map((row) => {
           const clean: Record<string, any> = {};
           let count = 0;
 
           for (const key in row) {
-            if (count >= 15) break; // HIGHER LIMIT: 15 fields
+            if (count >= 20) break; // HIGHER LIMIT: 20 fields
 
             const val = row[key];
 
@@ -124,4 +123,4 @@ export class ResponseGeneratorService {
       };
     }
   }
-}
+}

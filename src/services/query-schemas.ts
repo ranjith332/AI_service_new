@@ -16,7 +16,6 @@ export const intentSchema = z.object({
     (val) => (typeof val === "string" ? val.toLowerCase() : val),
     z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary", "book", "export_pdf", "general_knowledge"]).catch("list")
   ).default("list"),
-  operation: z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary", "book"]).default("list"),
   target: z.preprocess(
     (val) => (typeof val === "string" ? val.toLowerCase() : val),
     z.enum([
@@ -58,7 +57,7 @@ export const intentSchema = z.object({
     start: z.string().nullable().optional(),
     end: z.string().nullable().optional()
   }).default({ preset: "all_time" }),
-  limit: z.preprocess((val) => (val === null ? undefined : val), z.number().int().min(1).max(100).default(5)),
+  limit: z.preprocess((val) => (val === null ? undefined : val), z.number().int().min(1).max(100).default(20)),
   needsSql: z.boolean().default(true),
   needsVector: z.boolean().default(false),
   sort: z.preprocess(
