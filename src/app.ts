@@ -23,6 +23,7 @@ import { VectorSearchService } from "./services/vector-search.service.ts";
 import { SessionService } from "./services/session.service.ts";
 import { BookingService } from "./services/booking.service.ts";
 import { PdfService } from "./services/pdf.service.ts";
+import { ChatSessionService } from "./services/chat-session.service.ts";
 import { AppError } from "./utils/errors.ts";
 import { logger } from "./utils/logger.ts";
 import { InMemoryRateLimiter } from "./utils/rate-limiter.ts";
@@ -43,6 +44,7 @@ export async function createApp() {
   const sessionService = new SessionService();
   const bookingService = new BookingService(db, schemaMapping);
   const pdfService = new PdfService();
+  const chatSessionService = new ChatSessionService(db);
 
   const aiQueryService = new AiQueryService(
     schemaMapping,
@@ -57,7 +59,9 @@ export async function createApp() {
     cache,
     sessionService,
     bookingService,
-    pdfService
+    pdfService,
+    chatSessionService,
+    db
   );
 
   const app = new Elysia()
@@ -86,7 +90,9 @@ export async function createApp() {
       createAiRoute({
         aiQueryService,
         authService,
-        rateLimiter
+        rateLimiter,
+        chatSessionService,
+        db
       })
     )
     .use(

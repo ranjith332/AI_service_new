@@ -93,6 +93,12 @@ export class LlmProvider {
     console.log("NVIDIA LLM Model:", env.NVIDIA_QWEN_MODEL);
     console.log("NVIDIA Embedding Model:", env.NVIDIA_EMBEDDING_MODEL);
     
+    if (this.embeddings) {
+      console.log("Embeddings service initialized successfully");
+    } else {
+      console.warn("Embeddings service NOT initialized (Both NVIDIA and OpenAI keys missing)");
+    }
+    
     if (!this.openAiModel && !this.nvidiaQwenModel) {
       throw new AppError("At least one LLM provider must be configured.", 500, "llm_not_configured");
     }
@@ -137,7 +143,7 @@ export class LlmProvider {
           name: params.schemaName,
           method: "jsonSchema"
         }).withConfig({
-          timeout: this.getCandidates(params.useFastModel).length > 1 && candidate.name === "openai" ? 10000 : env.LLM_TIMEOUT_MS
+          timeout: this.getCandidates(params.useFastModel).length > 1 && candidate.name === "openai" ? 7000 : env.LLM_TIMEOUT_MS
         });
 
         const output = await withRetry(
@@ -213,7 +219,7 @@ export class LlmProvider {
         const result = await withRetry(
           () =>
             candidate.model.withConfig({
-              timeout: this.getCandidates(params.useFastModel).length > 1 && candidate.name === "openai" ? 10000 : env.LLM_TIMEOUT_MS
+              timeout: this.getCandidates(params.useFastModel).length > 1 && candidate.name === "openai" ? 7000 : env.LLM_TIMEOUT_MS
             }).invoke([
               new SystemMessage(params.system),
               new HumanMessage(params.user)

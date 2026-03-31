@@ -1,0 +1,75 @@
+﻿[dotenv@17.3.1] injecting env (0) from .env -- tip: ≡ƒñû agentic secret storage: https://dotenvx.com/as2
+--- Fallback Intent Verification ---
+
+Query: "How many patients and doctors are there?"
+{"level":50,"time":"2026-03-30T17:26:26.188Z","service":"doctor-healix-ai-service","environment":"development","name":"doctor-healix-ai-service","error":"Simulated LLM failure to trigger fallback","userQuery":"How many patients and doctors are there?","msg":"Intent classification failed fundamentally, falling back to rule detection"}
+Targets: [patients, doctors]
+Primary Target: unknown
+Operation: aggregate
+Metric: count
+Summary: How many patients and doctors are there?
+-----------------------------------
+
+Query: "Show me Dr. Raju's profile"
+{"level":50,"time":"2026-03-30T17:26:26.190Z","service":"doctor-healix-ai-service","environment":"development","name":"doctor-healix-ai-service","error":"Simulated LLM failure to trigger fallback","userQuery":"Show me Dr. Raju's profile","msg":"Intent classification failed fundamentally, falling back to rule detection"}
+Targets: [doctors]
+Primary Target: doctors
+Operation: semantic_lookup
+Metric: none
+Summary: Show me Dr. Raju's profile
+-----------------------------------
+
+Query: "Search for appointments and patients"
+{"level":50,"time":"2026-03-30T17:26:26.190Z","service":"doctor-healix-ai-service","environment":"development","name":"doctor-healix-ai-service","error":"Simulated LLM failure to trigger fallback","userQuery":"Search for appointments and patients","msg":"Intent classification failed fundamentally, falling back to rule detection"}
+Targets: [patients, appointments]
+Primary Target: unknown
+Operation: lookup
+Metric: none
+Summary: Search for appointments and patients
+-----------------------------------
+
+Query: "I want to book an appointment with Dr. Smith"
+{"level":50,"time":"2026-03-30T17:26:26.190Z","service":"doctor-healix-ai-service","environment":"development","name":"doctor-healix-ai-service","error":"Simulated LLM failure to trigger fallback","userQuery":"I want to book an appointment with Dr. Smith","msg":"Intent classification failed fundamentally, falling back to rule detection"}
+Targets: [doctors, appointments]
+Primary Target: unknown
+Operation: semantic_lookup
+Metric: none
+Summary: I want to book an appointment with Dr. Smith
+-----------------------------------
+
+Query: "Count the total number of prescriptions and medicines"
+{"level":50,"time":"2026-03-30T17:26:26.190Z","service":"doctor-healix-ai-service","environment":"development","name":"doctor-healix-ai-service","error":"Simulated LLM failure to trigger fallback","userQuery":"Count the total number of prescriptions and medicines","msg":"Intent classification failed fundamentally, falling back to rule detection"}
+Targets: []
+Primary Target: unknown
+Operation: aggregate
+Metric: count
+Summary: Count the total number of prescriptions and medicines
+-----------------------------------
+
+Query: "Tell me about paracetamol"
+{"level":50,"time":"2026-03-30T17:26:26.190Z","service":"doctor-healix-ai-service","environment":"development","name":"doctor-healix-ai-service","error":"Simulated LLM failure to trigger fallback","userQuery":"Tell me about paracetamol","msg":"Intent classification failed fundamentally, falling back to rule detection"}
+Targets: [medicines]
+Primary Target: medicines
+Operation: semantic_lookup
+Metric: none
+Summary: Tell me about paracetamol
+-----------------------------------
+
+Query: "How many tokens are left for today?"
+{"level":50,"time":"2026-03-30T17:26:26.190Z","service":"doctor-healix-ai-service","environment":"development","name":"doctor-healix-ai-service","error":"Simulated LLM failure to trigger fallback","userQuery":"How many tokens are left for today?","msg":"Intent classification failed fundamentally, falling back to rule detection"}
+Targets: []
+Primary Target: unknown
+Operation: aggregate
+Metric: count
+Summary: How many tokens are left for today?
+-----------------------------------
+
+Query: "What is the phone number of Dr. Raju?"
+{"level":50,"time":"2026-03-30T17:26:26.190Z","service":"doctor-healix-ai-service","environment":"development","name":"doctor-healix-ai-service","error":"Simulated LLM failure to trigger fallback","userQuery":"What is the phone number of Dr. Raju?","msg":"Intent classification failed fundamentally, falling back to rule detection"}
+Targets: [doctors]
+Primary Target: doctors
+Operation: semantic_lookup
+Metric: none
+Summary: What is the phone number of Dr. Raju?
+-----------------------------------
+

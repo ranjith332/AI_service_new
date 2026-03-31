@@ -53,8 +53,7 @@ export class DatabaseClient {
     logger.debug(
       {
         description: query.description,
-        rowCount: output.length,
-        rows: output // Log the actual results for visibility
+        rowCount: output.length
       },
       "SQL query execution complete"
     );

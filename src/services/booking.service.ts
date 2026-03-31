@@ -158,12 +158,39 @@ export class BookingService {
     return res.rows[0]?.insertId;
   }
 
-  private async findDoctor(tenantId: string, name: string) {
+  public async findDoctor(tenantId: string, name: string) {
     const s = this.schema.doctors;
+    const u = this.schema.users;
+    const parts = name.trim().split(/\s+/);
+    const firstName = parts[0] || "";
+    const lastName = parts.length > 1 ? parts.slice(1).join(" ") : firstName;
+
     const res = await this.db.query<{ id: number }>({
-      text: `SELECT ${s.id} AS id FROM ${s.table} WHERE ${s.tenant} = ? AND (LOWER(CONCAT(${s.firstName}, ' ', ${s.lastName})) LIKE ?) LIMIT 1`,
-      values: [tenantId, `%${name.toLowerCase()}%`],
-      description: "find_doctor"
+      text: `
+        SELECT d.${s.id} AS id 
+        FROM ${s.table} d
+        LEFT JOIN ${u.table} u ON u.${u.id} = d.${s.user}
+        WHERE d.${s.tenant} = ? 
+          AND (
+            LOWER(TRIM(u.${u.firstName})) LIKE ? OR 
+            LOWER(TRIM(u.${u.lastName})) LIKE ? OR 
+            LOWER(CONCAT(TRIM(u.${u.firstName}), ' ', TRIM(u.${u.lastName}))) LIKE ? OR
+            (LOWER(TRIM(u.${u.firstName})) LIKE ? AND LOWER(TRIM(u.${u.lastName})) LIKE ?) OR
+            LOWER(TRIM(d.${s.firstName})) LIKE ? OR 
+            LOWER(TRIM(d.${s.lastName})) LIKE ? OR
+            LOWER(CONCAT(TRIM(d.${s.firstName}), ' ', TRIM(d.${s.lastName}))) LIKE ? OR
+            (LOWER(TRIM(d.${s.firstName})) LIKE ? AND LOWER(TRIM(d.${s.lastName})) LIKE ?)
+          )
+        LIMIT 1
+      `,
+      values: [
+        tenantId,
+        `%${name.toLowerCase()}%`, `%${name.toLowerCase()}%`, `%${name.toLowerCase()}%`,
+        `%${firstName.toLowerCase()}%`, `%${lastName.toLowerCase()}%`,
+        `%${name.toLowerCase()}%`, `%${name.toLowerCase()}%`, `%${name.toLowerCase()}%`,
+        `%${firstName.toLowerCase()}%`, `%${lastName.toLowerCase()}%`
+      ],
+      description: "find_doctor_joined_robust"
     });
     return res.rows[0];
   }
@@ -234,19 +261,19 @@ export class BookingService {
     const s = this.schema.scheduleDays;
     const sch = this.schema.schedules;
     const ds = this.schema.doctorSessions;
-    
-    // 1. Check Live Session Status (HMS Logic)
-    const sessionStatus = await this.db.query<any>({
-      text: `SELECT ${ds.sessionStatus} AS status FROM ${ds.table} WHERE ${ds.tenant} = ? AND ${ds.doctor} = ? AND ${ds.date} = ? ORDER BY id DESC LIMIT 1`,
+
+    // 1. Check Live Session Status (HMS Core sync)
+    const sessionRes = await this.db.query<any>({
+      text: `SELECT ${ds.sessionStatus} as status FROM ${ds.table} WHERE ${ds.tenant} = ? AND ${ds.doctor} = ? AND ${ds.date} = ? ORDER BY id DESC LIMIT 1`,
       values: [tenantId, doctorId, date],
       description: "check_live_session_status"
     });
 
-    if (sessionStatus.rows[0]?.status === 'stopped') {
+    if (sessionRes.rows[0]?.status === 'stopped') {
       return { available: false, maxTokens: 0, message: "Doctor's session is currently stopped for today." };
     }
 
-    // 2. Check Session Protection (Time Based - HMS Logic)
+    // 2. Check Session Protection (Same-day logic from HMS Core)
     const isToday = new Date(date).toDateString() === new Date().toDateString();
     if (isToday) {
       const currentHour = new Date().getHours();
@@ -258,12 +285,11 @@ export class BookingService {
       }
     }
 
-    const dayOfWeek = new Date(date).getDay();
-    const dayName = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dayOfWeek];
+    const dayName = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(date).getDay()];
 
     const res = await this.db.query<any>({
       text: `
-        SELECT sd.*, s.${sch.tokenBlockOption} as token_block_option
+        SELECT sd.*, s.${sch.scheduleType} as schedule_type
         FROM ${s.table} sd
         INNER JOIN ${sch.table} s ON s.id = sd.${s.schedule}
         WHERE s.${sch.tenant} = ? 
@@ -272,10 +298,10 @@ export class BookingService {
         LIMIT 1
       `,
       values: [tenantId, doctorId, dayName],
-      description: "check_capacity_with_hms_logic"
+      description: "check_capacity_hms"
     });
 
-    if (res.rows.length === 0) return { available: false, maxTokens: 0 };
+    if (res.rows.length === 0) return { available: false, maxTokens: 0, message: `Doctor has no schedule set for ${dayName}.` };
 
     const row = res.rows[0];
     let maxTokens = 0;
@@ -292,12 +318,11 @@ export class BookingService {
 
     const s = this.schema.scheduleDays;
     const sch = this.schema.schedules;
-    const dayOfWeek = new Date(date).getDay();
-    const dayName = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dayOfWeek];
+    const dayName = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(date).getDay()];
 
     const res = await this.db.query<any>({
       text: `
-        SELECT sd.*, s.${sch.tokenBlockOption} as token_block_option
+        SELECT sd.*, s.${sch.scheduleType} as schedule_type, s.${sch.tokenBlockOption} as token_block_option, s.${sch.perPatientTime} as per_patient_time
         FROM ${s.table} sd
         INNER JOIN ${sch.table} s ON s.id = sd.${s.schedule}
         WHERE s.${sch.tenant} = ? 
@@ -306,55 +331,93 @@ export class BookingService {
         LIMIT 1
       `,
       values: [tenantId, doctor.id, dayName],
-      description: "get_tokens_detailed"
+      description: "get_detailed_slots_hms"
     });
 
     if (res.rows.length === 0) return [];
 
     const row = res.rows[0];
+    const isTokenBased = row.schedule_type === 'token_based' || row.schedule_type === 1; // HMS constant check: 1 = token
     const blockOption = parseInt(row.token_block_option || "0");
     const ratioMap: Record<number, number> = { 1: 2, 2: 3, 3: 5, 4: 7 };
     const ratio = ratioMap[blockOption] || 0;
 
-    let startToken = 1;
-    let endToken = 0;
-
-    if (session === "morning") {
-      endToken = row[s.morningTokens] || 0;
-    } else if (session === "afternoon") {
-      startToken = (row[s.morningTokens] || 0) + 1;
-      endToken = startToken + (row[s.afternoonTokens] || 0) - 1;
-    } else if (session === "night") {
-      startToken = (row[s.morningTokens] || 0) + (row[s.afternoonTokens] || 0) + 1;
-      endToken = startToken + (row[s.nightTokens] || 0) - 1;
-    }
-
-    if (endToken < startToken) return [];
-
-    // Get booked tokens
+    // Get booked tokens for comparison
     const bookedRes = await this.db.query<any>({
-      text: `SELECT ${this.schema.appointments.tokenNumber} as token FROM ${this.schema.appointments.table} WHERE ${this.schema.appointments.doctor} = ? AND DATE(${this.schema.appointments.scheduledAt}) = ? AND ${this.schema.appointments.isCompleted} != 4`,
+      text: `SELECT ${this.schema.appointments.tokenNumber} as token, ${this.schema.appointments.scheduledAt} as time FROM ${this.schema.appointments.table} WHERE ${this.schema.appointments.doctor} = ? AND DATE(${this.schema.appointments.scheduledAt}) = ? AND ${this.schema.appointments.isCompleted} != 4`,
       values: [doctor.id, date],
-      description: "get_booked_tokens"
+      description: "get_booked_hms"
     });
     const bookedTokens = new Set(bookedRes.rows.map(r => r.token));
+    const bookedTimes = new Set(bookedRes.rows.map(r => new Date(r.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })));
 
-    const tokens = [];
-    for (let i = startToken; i <= endToken; i++) {
-      let status = "available";
-      if (bookedTokens.has(i)) {
-        status = "booked";
-      } else if (ratio > 0 && i % ratio === 0) {
-        status = "blocked";
+    const slots: any[] = [];
+
+    if (isTokenBased) {
+      let startToken = 1;
+      let count = 0;
+
+      if (session === "morning") {
+        count = row[s.morningTokens] || 0;
+      } else if (session === "afternoon") {
+        startToken = (row[s.morningTokens] || 0) + 1;
+        count = row[s.afternoonTokens] || 0;
+      } else if (session === "night") {
+        startToken = (row[s.morningTokens] || 0) + (row[s.afternoonTokens] || 0) + 1;
+        count = row[s.nightTokens] || 0;
       }
-      tokens.push({ token: i, status });
+
+      for (let i = 0; i < count; i++) {
+        const tokenNum = startToken + i;
+        let status = bookedTokens.has(tokenNum) ? "booked" : (ratio > 0 && tokenNum % ratio === 0 ? "blocked" : "available");
+        slots.push({ token: tokenNum, status, type: 'token' });
+      }
+    } else {
+      // Time-Based Logic (Intervals)
+      let startTimeStr = "";
+      let endTimeStr = "";
+      if (session === "morning") {
+        startTimeStr = row[s.morningStartTime];
+        endTimeStr = row[s.morningEndTime];
+      } else if (session === "afternoon") {
+        startTimeStr = row[s.afternoonStartTime];
+        endTimeStr = row[s.afternoonEndTime];
+      } else if (session === "night") {
+        startTimeStr = row[s.nightStartTime];
+        endTimeStr = row[s.nightEndTime];
+      }
+
+      if (startTimeStr && endTimeStr) {
+        const perPatient = row.per_patient_time || "00:15:00";
+        const [pHours, pMins] = perPatient.split(':').map(Number);
+        const intervalMins = (pHours * 60) + (pMins || 0);
+
+        if (intervalMins > 0) {
+          let current = new Date(`${date} ${startTimeStr}`);
+          const end = new Date(`${date} ${endTimeStr}`);
+          let virtualToken = 1; 
+
+          while (current < end) {
+            const label = current.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+            let status = bookedTimes.has(label) ? "booked" : (ratio > 0 && virtualToken % ratio === 0 ? "blocked" : "available");
+            slots.push({ time: label, status, token: virtualToken, type: 'time' });
+            
+            current.setMinutes(current.getMinutes() + intervalMins);
+            virtualToken++;
+          }
+        }
+      }
     }
 
-    return tokens;
+    return slots;
   }
 
   private async createAppointment(tenantId: string, patientId: number, doctorId: number, params: BookingParams, dependentId?: number) {
     const s = this.schema.appointments;
+    
+    // Default to the first available token/time logic if not specified
+    const scheduledAt = params.date + " 00:00:00"; 
+
     const res = await this.db.query<{ insertId: number }>({
       text: `
         INSERT INTO ${s.table} (
@@ -369,7 +432,7 @@ export class BookingService {
         patientId,
         doctorId,
         dependentId ?? null,
-        `${params.date} 00:00:00`,
+        scheduledAt,
         params.token || 1,
         params.name
       ],
@@ -378,3 +441,4 @@ export class BookingService {
     return res.rows[0]?.insertId;
   }
 }
+

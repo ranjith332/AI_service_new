@@ -19,6 +19,10 @@ import { BookingService } from "./booking.service.ts";
 import { PdfService } from "./pdf.service.ts";
 import { UnsupportedQueryError } from "../utils/errors.ts";
 import { logger } from "../utils/logger.ts";
+import { ChatSessionService } from "./chat-session.service.ts";
+import { SqlChatMessageHistory } from "./sql-chat-history.ts";
+import type { DatabaseClient } from "../db/client.ts";
+import { HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
 
 interface PipelineContext {
   tenantId: string;
@@ -32,6 +36,7 @@ interface PipelineContext {
   sqlMode?: "mapped" | "dynamic";
   answer?: string;
   pdfBase64?: string;
+  history?: BaseMessage[];
 }
 
 export class AiQueryService {
@@ -48,15 +53,34 @@ export class AiQueryService {
     private readonly cache: QueryCacheService | null,
     private readonly sessionService: SessionService,
     private readonly bookingService: BookingService,
-    private readonly pdfService: PdfService
+    private readonly pdfService: PdfService,
+    private readonly chatSessionService: ChatSessionService,
+    private readonly db: DatabaseClient
   ) {}
 
   async execute(body: QueryBody) {
+    let sessionId = body.session_id;
+    let history: BaseMessage[] = [];
+
+    // 1. Ensure Session exists and load/create as needed
+    if (!sessionId) {
+      const newSession = await this.chatSessionService.createSession(body.tenant_id, body.user_query);
+      sessionId = newSession.id;
+    } else {
+      await this.chatSessionService.updateLastActivity(body.tenant_id, sessionId);
+    }
+
+    // 2. Initialize SQL-backed history
+    const historyStore = new SqlChatMessageHistory(this.db, body.tenant_id, sessionId);
+    const fullHistory = await historyStore.getMessages();
+    history = fullHistory.slice(-6); // Only last 3 turns for context speed
+
     const cacheKey = `${body.tenant_id}:${body.user_query.toLowerCase()}`;
     const cached = this.cache?.get<unknown>(cacheKey);
     if (cached) {
       return {
         ...(cached as Record<string, unknown>),
+        session_id: sessionId,
         meta: {
           ...((cached as { meta?: Record<string, unknown> }).meta ?? {}),
           cached: true
@@ -66,21 +90,84 @@ export class AiQueryService {
 
     const pipeline = RunnableSequence.from<PipelineContext, any>([
       RunnableLambda.from(async (input: PipelineContext) => {
-        const classified = await this.intentService.classify(input.tenantId, input.userQuery);
+        let classified: { provider: string; intent: QueryIntent };
+        try {
+          classified = await this.intentService.classify(input.tenantId, input.userQuery, input.history) as any;
+        } catch (error) {
+          logger.warn({ userQuery: input.userQuery, error: error instanceof Error ? error.message : error }, "Intent classification failed, using basic fallback");
+          classified = {
+            provider: "fallback",
+            intent: {
+              summary: "Basic Fallback",
+              operation: "list" as any,
+              target: "unknown" as any,
+              confidence: 0.5,
+              needsSql: true,
+              needsVector: true,
+              timeRange: { preset: "all_time" }
+            } as QueryIntent
+          };
+        }
+
+        let intent = classified.intent;
+        const q = input.userQuery.toLowerCase();
+
+        // ✅ Override BAD INTENT (CRITICAL FIX)
+        const doctorKeywords = ["doctor", "dr.", "dr ", "specialist", "experience", "bio", "about"];
+        const isDoctorRelated = doctorKeywords.some(k => q.includes(k)) || q.includes("raju");
+
+        if (
+          (intent.target === "unknown" || intent.target === "doctors") && 
+          isDoctorRelated && 
+          intent.operation !== "aggregate" && 
+          intent.operation !== "count"
+        ) {
+          intent.target = "doctors";
+          // If it's descriptive, ensure vector is on
+          if (q.includes("about") || q.includes("who is") || q.includes("experience") || q.includes("bio") || q.includes("tell me")) {
+            intent.operation = "semantic_lookup" as any;
+            intent.needsVector = true;
+          }
+          intent.needsSql = true;
+          
+          // Eager name extraction from query with robust cleaning (strip noise words and punctuation)
+          let docName = input.userQuery
+            .replace(/tell me about|who is|what is|info on|details of|search for|show me|find doctor|doctor|dr\.|dr|about|give me|specialist|experience|bio/gi, "")
+            .replace(/[?,.!]/g, " ") // Remove punctuation
+            .replace(/\b(his|her|details|info|please|now|today|profile|biography|specialty|exp|me|of)\b/gi, "") // Remove common noise words
+            .trim()
+            .replace(/\s+/g, " "); // Collapse internal spaces
+          
+          if (!docName || docName.length < 2) {
+             const docMatch = input.userQuery.match(/(?:doctor|dr\.|dr)\s+([a-zA-Z\s]+)/i);
+             if (docMatch?.[1]) docName = docMatch[1].trim();
+          }
+
+          if (docName) {
+            intent.doctorName = docName.trim();
+            // Don't overwrite summary if already descriptive
+            if (!intent.summary || intent.summary.length < 5) intent.summary = `Details for Dr. ${docName.trim()}`;
+          }
+          
+          logger.debug({ target: intent.target, operation: intent.operation, doctorName: intent.doctorName, needsVector: intent.needsVector }, "Doctor Intent Override applied");
+          logger.info({ userQuery: input.userQuery, extractedName: docName, operation: intent.operation }, "Refined 'doctors' intent logic");
+        }
         
         // Handle Clarification
-        if (classified.intent.operation === "book" && classified.intent.needsClarification) {
+        if (intent.operation === "book" && intent.needsClarification) {
            return {
              ...input,
-             intent: classified.intent,
+             intent,
              provider: classified.provider,
-             answer: classified.intent.clarificationMessage ?? "I need more information to book your appointment. What is your name?"
+             answer: intent.clarificationMessage ?? "I need more information to book your appointment. What is your name?"
            };
         }
 
+        logger.info({ intent, provider: classified.provider }, "Intent Classified");
+
         return {
           ...input,
-          intent: classified.intent,
+          intent,
           provider: classified.provider
         };
       }),
@@ -114,7 +201,7 @@ export class AiQueryService {
                     const booking = await this.bookingService.validateAndBook({
                         tenantId: input.tenantId,
                         name: patientName,
-                        doctorName: doctorName,
+                        doctorName: doctorName || "",
                         session: details.session as any,
                         token: details.token ?? undefined,
                         date
@@ -129,7 +216,7 @@ export class AiQueryService {
                 } else {
                     // Autonomous Session Lookup for availability
                     logger.info({ doctorName }, "Fetching HMS synchronized availability");
-                    const availableSessions = await this.bookingService.getAvailableSessions(input.tenantId, doctorName, date);
+                    const availableSessions = await this.bookingService.getAvailableSessions(input.tenantId, doctorName || "", date);
                     logger.info({ sessionsCount: availableSessions.length }, "Available sessions found");
 
                     if (availableSessions.length > 0) {
@@ -168,7 +255,97 @@ export class AiQueryService {
             };
         }
 
+        // MANUAL AGGREGATION HANDLER: Bypass LLM for simple count queries
+        if (intent.operation === "aggregate" && intent.metric === "count" && intent.targets && intent.targets.length > 0) {
+            const subqueries: string[] = [];
+            const values: any[] = [];
+            
+            const tableMap: Record<string, string> = {
+                'patients': 'patients',
+                'doctors': 'doctors',
+                'appointments': 'appointments',
+                'prescriptions': 'prescriptions',
+                'medicines': 'medicines'
+            };
+
+            for (const target of intent.targets) {
+                const tableName = tableMap[target.toLowerCase()];
+                if (tableName) {
+                    const entityMapping = (this.schema as any)[tableName];
+                    if (entityMapping) {
+                        const tenantCol = entityMapping.tenant || "tenant_id";
+                        const whereParts = [`${tenantCol} = ?`];
+                        const whereValues: any[] = [input.tenantId];
+
+                        // Apply Granular Filters
+                        const f = intent.filters || {};
+                        
+                        // 1. Status Filter
+                        if (f.status) {
+                            const statusCol = entityMapping.isCompleted || entityMapping.status || "status";
+                            whereParts.push(`${statusCol} = ?`);
+                            // Appointments use 0/1 for is_completed
+                            const statusVal = (tableName === "appointments" && (f.status === "completed" || f.status === "1")) ? 1 : 
+                                            (tableName === "appointments" && (f.status === "pending" || f.status === "0")) ? 0 : f.status;
+                            whereValues.push(statusVal);
+                        }
+
+                        // 2. Date Filter
+                        const dateColName = entityMapping.scheduledAt || entityMapping.createdAt || "created_at";
+                        if (f.date === "today") {
+                            whereParts.push(`DATE(${dateColName}) >= CURDATE()`);
+                        } else if (f.date === "yesterday") {
+                            whereParts.push(`DATE(${dateColName}) >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND DATE(${dateColName}) < CURDATE()`);
+                        } else if (f.date && f.date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                            // Specific date YYYY-MM-DD
+                            whereParts.push(`DATE(${dateColName}) = ?`);
+                            whereValues.push(f.date);
+                        }
+
+                        // 3. Department Filter
+                        if (f.department) {
+                            const deptCol = entityMapping.department || "department_id";
+                            whereParts.push(`${deptCol} = ?`);
+                            whereValues.push(f.department);
+                        }
+
+                        // 4. Experience Filter (Doctors Only)
+                        if (tableName === "doctors" && f.minExperience) {
+                            const createdCol = entityMapping.createdAt || "created_at";
+                            whereParts.push(`TIMESTAMPDIFF(YEAR, ${createdCol}, NOW()) >= ?`);
+                            whereValues.push(f.minExperience);
+                        }
+
+                        subqueries.push(`(SELECT COUNT(*) FROM \`${entityMapping.table}\` WHERE ${whereParts.join(" AND ")}) AS total_${tableName}`);
+                        values.push(...whereValues);
+                    }
+                }
+            }
+
+            if (subqueries.length > 0) {
+                const sqlText = `SELECT ${subqueries.join(", ")}`;
+                console.log(`[DIAGNOSTIC] Manual SQL: ${sqlText}`);
+                console.log(`[DIAGNOSTIC] Values: ${JSON.stringify(values)}`);
+                logger.info({ targets: intent.targets, filters: intent.filters, sql: sqlText }, "Executing filtered manual aggregation");
+                
+                const sqlData = await this.dbExecutor.execute<any>({
+                    text: sqlText,
+                    values,
+                    description: "manual_aggregation_count_filtered"
+                });
+
+                return {
+                    ...input,
+                    sqlRows: sqlData.rows,
+                    vectorRows: [],
+                    strategy: "sql" as ExecutionStrategy,
+                    mode: "mapped" as any
+                };
+            }
+        }
+
         const plan = this.planner.plan(intent);
+        logger.info({ strategy: plan.strategy, runSql: plan.runSql, runVector: plan.runVector, target: intent.target }, "Execution Plan Generated");
 
         let [sqlData, vectorRows] = await Promise.all([
           plan.runSql
@@ -179,32 +356,41 @@ export class AiQueryService {
                 tenantId: input.tenantId,
                 query: input.userQuery,
                 tableNames: plan.vectorTables
+              }).catch(err => {
+                logger.error({ error: err.message, userQuery: input.userQuery }, "Primary vector search failed. Continuing with SQL only.");
+                return [] as unknown[];
               })
             : Promise.resolve([] as unknown[])
         ]);
 
         // AUTOMATIC FALLBACK: If SQL & initial Vector results are empty, trigger a broader vector search as a safety net
-        if (sqlData.rows.length === 0 && vectorRows.length === 0) {
+        // EXCEPTION: Never fallback to vector for aggregations/counts
+        if (sqlData.rows.length === 0 && vectorRows.length === 0 && intent.operation !== "aggregate" && intent.operation !== "count") {
             logger.info({ userQuery: input.userQuery, originalPlan: plan.strategy }, "No direct matches found. Triggering semantic fallback.");
-            vectorRows = await this.vectorSearch.search({
-                tenantId: input.tenantId,
-                query: input.userQuery,
-                tableNames: plan.vectorTables.length > 0 ? plan.vectorTables : ["patients", "prescriptions", "medicines", "doctors"]
-            });
+            try {
+                vectorRows = await this.vectorSearch.search({
+                    tenantId: input.tenantId,
+                    query: input.userQuery,
+                    tableNames: plan.vectorTables.length > 0 ? plan.vectorTables : ["patients", "prescriptions", "medicines", "doctors"]
+                });
+                logger.debug({ count: vectorRows.length }, "Semantic fallback vector search complete");
+            } catch (err: any) {
+                logger.error({ error: err.message, userQuery: input.userQuery }, "Semantic fallback vector search also failed.");
+                vectorRows = [];
+            }
         }
 
         // DEEP DIVE: For individual doctor lookups, append their availability/sessions to "all details"
-        const doctorName = intent.doctorName;
-        if (intent.target === "doctors" && doctorName && sqlData.rows.length > 0) {
+        if (intent.target === "doctors" && intent.doctorName && sqlData.rows.length > 0) {
             const dr = sqlData.rows[0];
             const date = new Date().toISOString().split("T")[0];
             try {
-                const sessions = await this.bookingService.getAvailableSessions(input.tenantId, doctorName, date);
+                const sessions = await this.bookingService.getAvailableSessions(input.tenantId, intent.doctorName as string, date);
                 if (sessions.length > 0) {
                     (dr as any).available_sessions_today = sessions.join(", ");
                 }
             } catch (e) {
-                logger.warn({ error: e, doctor: doctorName }, "Doctor session deep-dive failed");
+                logger.warn({ error: e, doctor: intent.doctorName }, "Doctor session deep-dive failed");
             }
         }
 
@@ -305,7 +491,8 @@ export class AiQueryService {
           intent: input.intent!,
           sqlRows: input.sqlRows ?? [],
           vectorRows: input.vectorRows ?? [],
-          timeZone: env.APP_TIMEZONE
+          timeZone: env.APP_TIMEZONE,
+          history: input.history
         });
 
         return {
@@ -318,8 +505,14 @@ export class AiQueryService {
 
     const result = await pipeline.invoke({
       tenantId: body.tenant_id,
-      userQuery: body.user_query
+      userQuery: body.user_query,
+      sessionId,
+      history
     });
+
+    // 3. Persist the current interaction to SQL history
+    await historyStore.addMessage(new HumanMessage(body.user_query));
+    await historyStore.addMessage(new AIMessage(result.answer));
 
     if (result.intent?.operation === "export_pdf") {
       return {
@@ -327,12 +520,14 @@ export class AiQueryService {
         patient_name: result.intent.patientName,
         answer: result.answer,
         pdf_base64: result.pdfBase64,
-        tenant_id: body.tenant_id
+        tenant_id: body.tenant_id,
+        session_id: sessionId
       };
     }
 
     const response = {
       tenant_id: body.tenant_id,
+      session_id: sessionId,
       answer: result.answer,
       data: {
         sql: {
@@ -378,7 +573,7 @@ export class AiQueryService {
     try {
       const query =
         input.intent!.target === "unknown"
-          ? await this.buildDynamicQuery(input.tenantId, input.userQuery)
+          ? await this.buildDynamicQuery(input.tenantId, input.userQuery, input.intent?.target)
           : this.sqlBuilder.build({
               tenantId: input.tenantId,
               intent: input.intent!,
@@ -406,9 +601,9 @@ export class AiQueryService {
     }
   }
 
-  private async buildDynamicQuery(tenantId: string, userQuery: string) {
+  private async buildDynamicQuery(tenantId: string, userQuery: string, target?: string) {
     const discoveredSchema = await this.schemaDiscovery.getAccessibleSchema();
-    const schemaSummary = this.schemaDiscovery.formatSchemaSummary(discoveredSchema);
+    const schemaSummary = this.schemaDiscovery.formatPrunedSchemaSummary(discoveredSchema, target);
     const generated = await this.dynamicSqlPlanner.createPlan({
       tenantId,
       userQuery,

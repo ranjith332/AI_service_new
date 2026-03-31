@@ -19,6 +19,13 @@ export class SqlBuilderService {
   build(params: BuildParams): SqlQuery {
     const { intent } = params;
 
+    // Handle single-target aggregations (Multi-target goes to Dynamic Planner)
+    if (intent.operation === "aggregate" || intent.operation === "count") {
+      if (intent.target !== "unknown") {
+        return this.buildGenericAggregationQuery(params, intent.target);
+      }
+    }
+
     if (intent.target === "appointments") {
       return this.buildAppointmentsQuery(params);
     }
@@ -28,10 +35,11 @@ export class SqlBuilderService {
     }
 
     if (intent.target === "doctors") {
-       if (intent.operation === "list") {
-          return this.buildDoctorsListQuery(params);
+       if (intent.operation === "semantic_lookup") {
+          return this.buildDoctorByNameQuery(params);
        }
-       return this.buildDoctorRankingQuery(params);
+       // Default to list query which handles filtering correctly
+       return this.buildDoctorsListQuery(params);
     }
 
     if (intent.metric === "doctor_with_most_appointments") {
@@ -683,6 +691,83 @@ export class SqlBuilderService {
       `,
       values,
       description: "list_schedules"
+    };
+  }
+
+  private buildDoctorByNameQuery({ tenantId, intent, schema }: BuildParams): SqlQuery {
+    const doctors = schema.doctors;
+    const users = schema.users;
+    const values: unknown[] = [tenantId];
+    const where = [`d.${doctors.tenant} = ?`];
+
+    const doctorName = intent.doctorName || intent.summary || "";
+    const pattern = `%${doctorName.toLowerCase()}%`;
+    const parts = doctorName.trim().split(/\s+/);
+    const firstName = parts[0] || "";
+    const lastName = parts.length > 1 ? parts.slice(1).join(" ") : firstName;
+    
+    where.push(`(
+      LOWER(TRIM(u.${users.firstName})) LIKE ? OR 
+      LOWER(TRIM(u.${users.lastName})) LIKE ? OR 
+      LOWER(CONCAT(TRIM(u.${users.firstName}), ' ', TRIM(u.${users.lastName}))) LIKE ? OR
+      (LOWER(TRIM(u.${users.firstName})) LIKE ? AND LOWER(TRIM(u.${users.lastName})) LIKE ?) OR
+      LOWER(TRIM(d.${doctors.firstName})) LIKE ? OR 
+      LOWER(TRIM(d.${doctors.lastName})) LIKE ? OR
+      LOWER(CONCAT(TRIM(d.${doctors.firstName}), ' ', TRIM(d.${doctors.lastName}))) LIKE ? OR
+      (LOWER(TRIM(d.${doctors.firstName})) LIKE ? AND LOWER(TRIM(d.${doctors.lastName})) LIKE ?)
+    )`);
+    
+    values.push(
+      pattern, pattern, pattern, 
+      `%${firstName.toLowerCase()}%`, `%${lastName.toLowerCase()}%`,
+      pattern, pattern, pattern,
+      `%${firstName.toLowerCase()}%`, `%${lastName.toLowerCase()}%`
+    );
+
+    return {
+      text: `
+        SELECT
+          d.${doctors.id} AS id,
+          d.${doctors.firstName} AS first_name,
+          d.${doctors.lastName} AS last_name,
+          d.${doctors.designation} AS designation,
+          d.${doctors.specialty} AS specialization
+        FROM ${doctors.table} d
+        LEFT JOIN ${users.table} u ON u.${users.id} = d.${doctors.user}
+        WHERE ${where.join(" AND ")}
+        LIMIT 1
+      `,
+      values,
+      description: "doctor_by_name_lookup"
+    };
+  }
+
+  private buildGenericAggregationQuery(params: BuildParams, target: string): SqlQuery {
+    const { tenantId, intent, schema, timeZone } = params;
+    const tableMapping = (schema as any)[target];
+    
+    if (!tableMapping) {
+      throw new UnsupportedQueryError(`Unknown table for aggregation: ${target}`);
+    }
+
+    const table = tableMapping.table;
+    const tenantCol = tableMapping.tenant || "tenant_id";
+    const dateCol = tableMapping.scheduledAt || tableMapping.createdAt || tableMapping.date || "created_at";
+
+    const values: unknown[] = [tenantId];
+    const where = [`${tenantCol} = ?`];
+
+    const range = resolveTimeRange(intent.timeRange, timeZone);
+    if (range.start && range.end) {
+      where.push(`${dateCol} >= ?`);
+      where.push(`${dateCol} < ?`);
+      values.push(range.start, range.end);
+    }
+
+    return {
+      text: `SELECT COUNT(*) as count FROM ${table} WHERE ${where.join(" AND ")}`,
+      values,
+      description: `aggregate_count_${target}`
     };
   }
 }
