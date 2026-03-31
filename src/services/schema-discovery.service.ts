@@ -94,4 +94,31 @@ export class SchemaDiscoveryService {
       })
       .join("\n");
   }
+
+  /**
+   * Focuses the schema summary on the target table to reduce token count.
+   */
+  formatPrunedSchemaSummary(schema: DiscoveredSchema, target?: string): string {
+    const tableNames = Object.keys(schema).sort();
+    const normalizedTarget = target?.toLowerCase().replace(/s$/, "");
+
+    // High-priority tables that should always have full columns if they are the target or related
+    const coreTables = ["patient", "doctor", "appointment", "prescription", "medicine"];
+    
+    return tableNames
+      .map((tableName) => {
+        const table = schema[tableName]!;
+        const isTarget = normalizedTarget && (tableName.toLowerCase().includes(normalizedTarget) || normalizedTarget.includes(tableName.toLowerCase()));
+        
+        // If it's the target table, or a core table related to the target, show all columns
+        // Otherwise, just show the table name to save tokens
+        if (isTarget || (normalizedTarget && coreTables.includes(tableName.toLowerCase().replace(/s$/, "")))) {
+          const columns = table.columns.map((column) => `${column.name}:${column.dataType}`).join(", ");
+          return `${table.name}(${columns})`;
+        }
+        
+        return `${table.name}([only essential columns available])`;
+      })
+      .join("\n");
+  }
 }

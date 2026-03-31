@@ -15,7 +15,7 @@ export const intentSchema = z.object({
   summary: z.string().default("No summary"),
   operation: z.preprocess(
     (val) => (typeof val === "string" ? val.toLowerCase() : val),
-    z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary", "book", "export_pdf", "general_knowledge"]).catch("list")
+    z.enum(["list", "aggregate", "latest", "lookup", "semantic_lookup", "summary", "book", "export_pdf","count", "general_knowledge"]).catch("list")
   ).default("list"),
   target: z.preprocess(
     (val) => (typeof val === "string" ? val.toLowerCase() : val),
@@ -45,13 +45,20 @@ export const intentSchema = z.object({
       "unknown"
     ]).catch("unknown")
   ).default("unknown"),
+  targets: z.array(z.string()).default([]),
+  filters: z.object({
+    date: z.string().nullable().optional(),
+    status: z.string().nullable().optional(),
+    department: z.string().nullable().optional(),
+    minExperience: z.number().nullable().optional()
+  }).default({}),
   patientName: z.string().nullable().optional(),
   patientId: z.number().nullable().optional(),
   doctorName: z.string().nullable().optional(),
   condition: z.string().nullable().optional(),
   metric: z.preprocess(
     (val) => (typeof val === "string" ? val.toLowerCase() : val),
-    z.enum(["none", "revenue", "appointment_count", "doctor_with_most_appointments"]).catch("none")
+    z.enum(["none", "revenue", "appointment_count", "doctor_with_most_appointments", "count", "sum", "avg"]).catch("none")
   ).default("none"),
   timeRange: z.object({
     preset: z.enum(["today", "yesterday", "this_week", "this_month", "all_time", "latest", "custom"]).default("all_time"),
@@ -87,6 +94,13 @@ export const intentSchemaRaw = z.object({
   summary: z.string().optional().nullable(),
   operation: z.string().optional().nullable(),
   target: z.string().optional().nullable(),
+  targets: z.array(z.string()).optional().nullable(),
+  filters: z.object({
+    date: z.string().nullable().optional(),
+    status: z.string().nullable().optional(),
+    department: z.string().nullable().optional(),
+    minExperience: z.number().nullable().optional()
+  }).optional().nullable(),
   patientName: z.string().nullable().optional(),
   patientId: z.number().nullable().optional(),
   doctorName: z.string().nullable().optional(),

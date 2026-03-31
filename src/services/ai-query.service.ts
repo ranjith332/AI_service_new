@@ -72,7 +72,8 @@ export class AiQueryService {
 
     // 2. Initialize SQL-backed history
     const historyStore = new SqlChatMessageHistory(this.db, body.tenant_id, sessionId);
-    history = await historyStore.getMessages();
+    const fullHistory = await historyStore.getMessages();
+    history = fullHistory.slice(-6); // Only last 3 turns for context speed
 
     const cacheKey = `${body.tenant_id}:${body.user_query.toLowerCase()}`;
     const cached = this.cache?.get<unknown>(cacheKey);
@@ -89,22 +90,53 @@ export class AiQueryService {
 
     const pipeline = RunnableSequence.from<PipelineContext, any>([
       RunnableLambda.from(async (input: PipelineContext) => {
-        const classified = await this.intentService.classify(input.tenantId, input.userQuery, input.history);
+        let classified: { provider: string; intent: QueryIntent };
+        try {
+          classified = await this.intentService.classify(input.tenantId, input.userQuery, input.history) as any;
+        } catch (error) {
+          logger.warn({ userQuery: input.userQuery, error: error instanceof Error ? error.message : error }, "Intent classification failed, using basic fallback");
+          classified = {
+            provider: "fallback",
+            intent: {
+              summary: "Basic Fallback",
+              operation: "list" as any,
+              target: "unknown" as any,
+              confidence: 0.5,
+              needsSql: true,
+              needsVector: true,
+              timeRange: { preset: "all_time" }
+            } as QueryIntent
+          };
+        }
+
         let intent = classified.intent;
         const q = input.userQuery.toLowerCase();
 
         // ✅ Override BAD INTENT (CRITICAL FIX)
+        const doctorKeywords = ["doctor", "dr.", "dr ", "specialist", "experience", "bio", "about"];
+        const isDoctorRelated = doctorKeywords.some(k => q.includes(k)) || q.includes("raju");
+
         if (
-          intent.target === "unknown" &&
-          (q.includes("doctor") || q.includes("dr") || q.includes("raju"))
+          (intent.target === "unknown" || intent.target === "doctors") && 
+          isDoctorRelated && 
+          intent.operation !== "aggregate" && 
+          intent.operation !== "count"
         ) {
           intent.target = "doctors";
-          intent.operation = "semantic_lookup" as any;
+          // If it's descriptive, ensure vector is on
+          if (q.includes("about") || q.includes("who is") || q.includes("experience") || q.includes("bio") || q.includes("tell me")) {
+            intent.operation = "semantic_lookup" as any;
+            intent.needsVector = true;
+          }
           intent.needsSql = true;
-          intent.needsVector = true;
           
-          // Eager name extraction from query
-          let docName = input.userQuery.replace(/tell me about|who is|what is|info on|details of|search for|show me|find doctor|doctor|dr\.|dr|about|give me/gi, "").trim();
+          // Eager name extraction from query with robust cleaning (strip noise words and punctuation)
+          let docName = input.userQuery
+            .replace(/tell me about|who is|what is|info on|details of|search for|show me|find doctor|doctor|dr\.|dr|about|give me|specialist|experience|bio/gi, "")
+            .replace(/[?,.!]/g, " ") // Remove punctuation
+            .replace(/\b(his|her|details|info|please|now|today|profile|biography|specialty|exp|me|of)\b/gi, "") // Remove common noise words
+            .trim()
+            .replace(/\s+/g, " "); // Collapse internal spaces
           
           if (!docName || docName.length < 2) {
              const docMatch = input.userQuery.match(/(?:doctor|dr\.|dr)\s+([a-zA-Z\s]+)/i);
@@ -113,10 +145,12 @@ export class AiQueryService {
 
           if (docName) {
             intent.doctorName = docName.trim();
-            intent.summary = docName.trim();
+            // Don't overwrite summary if already descriptive
+            if (!intent.summary || intent.summary.length < 5) intent.summary = `Details for Dr. ${docName.trim()}`;
           }
           
-          logger.info({ userQuery: input.userQuery, extractedName: docName }, "Overriding 'unknown' intent with 'doctors' logic");
+          logger.debug({ target: intent.target, operation: intent.operation, doctorName: intent.doctorName, needsVector: intent.needsVector }, "Doctor Intent Override applied");
+          logger.info({ userQuery: input.userQuery, extractedName: docName, operation: intent.operation }, "Refined 'doctors' intent logic");
         }
         
         // Handle Clarification
@@ -221,6 +255,95 @@ export class AiQueryService {
             };
         }
 
+        // MANUAL AGGREGATION HANDLER: Bypass LLM for simple count queries
+        if (intent.operation === "aggregate" && intent.metric === "count" && intent.targets && intent.targets.length > 0) {
+            const subqueries: string[] = [];
+            const values: any[] = [];
+            
+            const tableMap: Record<string, string> = {
+                'patients': 'patients',
+                'doctors': 'doctors',
+                'appointments': 'appointments',
+                'prescriptions': 'prescriptions',
+                'medicines': 'medicines'
+            };
+
+            for (const target of intent.targets) {
+                const tableName = tableMap[target.toLowerCase()];
+                if (tableName) {
+                    const entityMapping = (this.schema as any)[tableName];
+                    if (entityMapping) {
+                        const tenantCol = entityMapping.tenant || "tenant_id";
+                        const whereParts = [`${tenantCol} = ?`];
+                        const whereValues: any[] = [input.tenantId];
+
+                        // Apply Granular Filters
+                        const f = intent.filters || {};
+                        
+                        // 1. Status Filter
+                        if (f.status) {
+                            const statusCol = entityMapping.isCompleted || entityMapping.status || "status";
+                            whereParts.push(`${statusCol} = ?`);
+                            // Appointments use 0/1 for is_completed
+                            const statusVal = (tableName === "appointments" && (f.status === "completed" || f.status === "1")) ? 1 : 
+                                            (tableName === "appointments" && (f.status === "pending" || f.status === "0")) ? 0 : f.status;
+                            whereValues.push(statusVal);
+                        }
+
+                        // 2. Date Filter
+                        const dateColName = entityMapping.scheduledAt || entityMapping.createdAt || "created_at";
+                        if (f.date === "today") {
+                            whereParts.push(`DATE(${dateColName}) >= CURDATE()`);
+                        } else if (f.date === "yesterday") {
+                            whereParts.push(`DATE(${dateColName}) >= DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND DATE(${dateColName}) < CURDATE()`);
+                        } else if (f.date && f.date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                            // Specific date YYYY-MM-DD
+                            whereParts.push(`DATE(${dateColName}) = ?`);
+                            whereValues.push(f.date);
+                        }
+
+                        // 3. Department Filter
+                        if (f.department) {
+                            const deptCol = entityMapping.department || "department_id";
+                            whereParts.push(`${deptCol} = ?`);
+                            whereValues.push(f.department);
+                        }
+
+                        // 4. Experience Filter (Doctors Only)
+                        if (tableName === "doctors" && f.minExperience) {
+                            const createdCol = entityMapping.createdAt || "created_at";
+                            whereParts.push(`TIMESTAMPDIFF(YEAR, ${createdCol}, NOW()) >= ?`);
+                            whereValues.push(f.minExperience);
+                        }
+
+                        subqueries.push(`(SELECT COUNT(*) FROM \`${entityMapping.table}\` WHERE ${whereParts.join(" AND ")}) AS total_${tableName}`);
+                        values.push(...whereValues);
+                    }
+                }
+            }
+
+            if (subqueries.length > 0) {
+                const sqlText = `SELECT ${subqueries.join(", ")}`;
+                console.log(`[DIAGNOSTIC] Manual SQL: ${sqlText}`);
+                console.log(`[DIAGNOSTIC] Values: ${JSON.stringify(values)}`);
+                logger.info({ targets: intent.targets, filters: intent.filters, sql: sqlText }, "Executing filtered manual aggregation");
+                
+                const sqlData = await this.dbExecutor.execute<any>({
+                    text: sqlText,
+                    values,
+                    description: "manual_aggregation_count_filtered"
+                });
+
+                return {
+                    ...input,
+                    sqlRows: sqlData.rows,
+                    vectorRows: [],
+                    strategy: "sql" as ExecutionStrategy,
+                    mode: "mapped" as any
+                };
+            }
+        }
+
         const plan = this.planner.plan(intent);
         logger.info({ strategy: plan.strategy, runSql: plan.runSql, runVector: plan.runVector, target: intent.target }, "Execution Plan Generated");
 
@@ -233,18 +356,28 @@ export class AiQueryService {
                 tenantId: input.tenantId,
                 query: input.userQuery,
                 tableNames: plan.vectorTables
+              }).catch(err => {
+                logger.error({ error: err.message, userQuery: input.userQuery }, "Primary vector search failed. Continuing with SQL only.");
+                return [] as unknown[];
               })
             : Promise.resolve([] as unknown[])
         ]);
 
         // AUTOMATIC FALLBACK: If SQL & initial Vector results are empty, trigger a broader vector search as a safety net
-        if (sqlData.rows.length === 0 && vectorRows.length === 0) {
+        // EXCEPTION: Never fallback to vector for aggregations/counts
+        if (sqlData.rows.length === 0 && vectorRows.length === 0 && intent.operation !== "aggregate" && intent.operation !== "count") {
             logger.info({ userQuery: input.userQuery, originalPlan: plan.strategy }, "No direct matches found. Triggering semantic fallback.");
-            vectorRows = await this.vectorSearch.search({
-                tenantId: input.tenantId,
-                query: input.userQuery,
-                tableNames: plan.vectorTables.length > 0 ? plan.vectorTables : ["patients", "prescriptions", "medicines", "doctors"]
-            });
+            try {
+                vectorRows = await this.vectorSearch.search({
+                    tenantId: input.tenantId,
+                    query: input.userQuery,
+                    tableNames: plan.vectorTables.length > 0 ? plan.vectorTables : ["patients", "prescriptions", "medicines", "doctors"]
+                });
+                logger.debug({ count: vectorRows.length }, "Semantic fallback vector search complete");
+            } catch (err: any) {
+                logger.error({ error: err.message, userQuery: input.userQuery }, "Semantic fallback vector search also failed.");
+                vectorRows = [];
+            }
         }
 
         // DEEP DIVE: For individual doctor lookups, append their availability/sessions to "all details"
@@ -440,7 +573,7 @@ export class AiQueryService {
     try {
       const query =
         input.intent!.target === "unknown"
-          ? await this.buildDynamicQuery(input.tenantId, input.userQuery)
+          ? await this.buildDynamicQuery(input.tenantId, input.userQuery, input.intent?.target)
           : this.sqlBuilder.build({
               tenantId: input.tenantId,
               intent: input.intent!,
@@ -468,9 +601,9 @@ export class AiQueryService {
     }
   }
 
-  private async buildDynamicQuery(tenantId: string, userQuery: string) {
+  private async buildDynamicQuery(tenantId: string, userQuery: string, target?: string) {
     const discoveredSchema = await this.schemaDiscovery.getAccessibleSchema();
-    const schemaSummary = this.schemaDiscovery.formatSchemaSummary(discoveredSchema);
+    const schemaSummary = this.schemaDiscovery.formatPrunedSchemaSummary(discoveredSchema, target);
     const generated = await this.dynamicSqlPlanner.createPlan({
       tenantId,
       userQuery,

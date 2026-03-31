@@ -19,6 +19,13 @@ export class SqlBuilderService {
   build(params: BuildParams): SqlQuery {
     const { intent } = params;
 
+    // Handle single-target aggregations (Multi-target goes to Dynamic Planner)
+    if (intent.operation === "aggregate" || intent.operation === "count") {
+      if (intent.target !== "unknown") {
+        return this.buildGenericAggregationQuery(params, intent.target);
+      }
+    }
+
     if (intent.target === "appointments") {
       return this.buildAppointmentsQuery(params);
     }
@@ -732,6 +739,35 @@ export class SqlBuilderService {
       `,
       values,
       description: "doctor_by_name_lookup"
+    };
+  }
+
+  private buildGenericAggregationQuery(params: BuildParams, target: string): SqlQuery {
+    const { tenantId, intent, schema, timeZone } = params;
+    const tableMapping = (schema as any)[target];
+    
+    if (!tableMapping) {
+      throw new UnsupportedQueryError(`Unknown table for aggregation: ${target}`);
+    }
+
+    const table = tableMapping.table;
+    const tenantCol = tableMapping.tenant || "tenant_id";
+    const dateCol = tableMapping.scheduledAt || tableMapping.createdAt || tableMapping.date || "created_at";
+
+    const values: unknown[] = [tenantId];
+    const where = [`${tenantCol} = ?`];
+
+    const range = resolveTimeRange(intent.timeRange, timeZone);
+    if (range.start && range.end) {
+      where.push(`${dateCol} >= ?`);
+      where.push(`${dateCol} < ?`);
+      values.push(range.start, range.end);
+    }
+
+    return {
+      text: `SELECT COUNT(*) as count FROM ${table} WHERE ${where.join(" AND ")}`,
+      values,
+      description: `aggregate_count_${target}`
     };
   }
 }

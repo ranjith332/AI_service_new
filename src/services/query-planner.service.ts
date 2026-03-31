@@ -59,10 +59,11 @@ export class QueryPlannerService {
     // FORCE SQL FOR KNOWN TARGETS
     if (normalizedTarget === "doctors" || normalizedTarget === "appointments") {
       runSql = true;
-      // Only disable vector if not specifically requested (prioritizes "tell me about" / semantic_lookup)
-      if (!intent.needsVector && intent.operation !== "semantic_lookup") {
-        runVector = false;
-      }
+    }
+
+    // FORCE SQL ONLY FOR AGGREGATION
+    if (intent.operation === "aggregate" || intent.operation === "count") {
+      runVector = false;
     }
 
     const strategy: ExecutionStrategy = runSql && runVector ? "hybrid" : runVector ? "vector" : "sql";

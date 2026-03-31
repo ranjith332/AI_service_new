@@ -31,6 +31,7 @@ export class ResponseGeneratorService {
       "0=Pending, 1=Completed, 4=Cancelled.",
       "Never mention SQL, IDs, or JSON.",
       "If no data matches the specific query in the provided records, answer normally from your own knowledge base (especially for general medical terms or definitions).",
+      "Interpret user queries flexibly; ignore minor grammatical or spelling errors and focus on the underlying intent.",
     ].join(" ");
 
     // 🔥 CRAG-lite relevance filter
@@ -88,7 +89,23 @@ export class ResponseGeneratorService {
     };
 
     const safeSQLRows = sanitizeData(params.sqlRows, params.userQuery);
-    const safeVectorRows = sanitizeData(params.vectorRows, params.userQuery).slice(0, 10);
+    
+    // For Vector Rows, we skip the keyword filter since VectorSearch already did semantic filtering
+    const safeVectorRows = (params.vectorRows || [])
+      .slice(0, 10)
+      .map((row: any) => {
+          const clean: Record<string, any> = {};
+          let count = 0;
+          for (const key in row) {
+            if (count >= 50) break; // More fields for bio
+            const val = row[key];
+            if (key.startsWith("_")) continue;
+            if (val === null || val === undefined) continue;
+            clean[key] = typeof val === "string" && val.length > 2000 ? val.substring(0, 2000) + "..." : val;
+            count++;
+          }
+          return clean;
+      });
 
     const sqlText = toTextFormat(safeSQLRows, "DATABASE_RESULTS");
     const vectorText = toTextFormat(safeVectorRows, "KNOWLEDGE_BASE_RESULTS");
@@ -112,6 +129,7 @@ export class ResponseGeneratorService {
       const result = await this.llm.invokeText({
         system,
         user: userPayload,
+        useFastModel: true
       });
 
       return {
@@ -121,11 +139,11 @@ export class ResponseGeneratorService {
     } catch (error: any) {
       console.error("LLM PRIMARY FAILED. Reason:", error.message);
 
-      // Robust fallback: if SQL data is available, format it manually
-      if (safeSQLRows.length > 0) {
+      // Robust fallback: if any data is available, format it manually
+      if (safeSQLRows.length > 0 || safeVectorRows.length > 0) {
         return {
           provider: "openai", // Mark as fallback
-          answer: this.formatDataFallback(safeSQLRows, params.intent.target || "system")
+          answer: this.formatDataFallback(safeSQLRows, safeVectorRows, params.intent.target || "system")
         };
       }
 
@@ -137,22 +155,32 @@ export class ResponseGeneratorService {
     }
   }
 
-  private formatDataFallback(rows: any[], target: string): string {
-    const intro = `The natural language service is temporarily unavailable, but I have retrieved the following ${target} record(s) for you from the system:\n\n`;
+  private formatDataFallback(sqlRows: any[], vectorRows: any[], target: string): string {
+    let output = `The natural language service is temporarily unavailable, but I have retrieved the following ${target} record(s) for you from the system:\n\n`;
     
-    const formattedRows = rows.map((row, index) => {
-      const details = Object.entries(row)
-        .filter(([k]) => !k.startsWith("_") && k !== "id" && k !== "tenant_id")
-        .map(([k, v]) => {
-          // Clean up key name
-          const displayKey = k.split("_").map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
-          return `* **${displayKey}**: ${v}`;
-        })
-        .join("\n");
-      
-      return `### Record ${index + 1}\n${details}`;
-    }).join("\n\n");
+    if (sqlRows.length > 0) {
+      output += "### Database Records\n" + sqlRows.map((row, index) => {
+        const details = Object.entries(row)
+          .filter(([k]) => !k.startsWith("_") && k !== "id" && k !== "tenant_id")
+          .map(([k, v]) => {
+            const displayKey = k.split("_").map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+            return `* **${displayKey}**: ${v}`;
+          })
+          .join("\n");
+        return `#### Record ${index + 1}\n${details}`;
+      }).join("\n\n") + "\n\n";
+    }
 
-    return intro + formattedRows + "\n\n(Note: This is a direct record summary. You can try asking again in a moment for a conversational answer.)";
+    if (vectorRows.length > 0) {
+      output += "### Knowledge Base (Bio) Details\n" + vectorRows.map((row, index) => {
+        const details = Object.entries(row)
+          .filter(([k]) => !k.startsWith("_") && k !== "id" && k !== "tenant_id")
+          .map(([k, v]) => `* ${v}`)
+          .join("\n");
+        return details;
+      }).join("\n\n") + "\n\n";
+    }
+
+    return output + "(Note: This is a direct record summary. You can try asking again in a moment for a conversational answer.)";
   }
 }

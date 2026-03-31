@@ -32,7 +32,8 @@ export class DynamicSqlPlannerService {
     const result = await this.llm.invokeStructured(dynamicSqlPlanSchema, {
       system,
       user,
-      schemaName: "DoctorHealixDynamicSqlPlan"
+      schemaName: "DoctorHealixDynamicSqlPlan",
+      useFastModel: true
     });
 
     return {
