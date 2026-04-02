@@ -11,18 +11,34 @@ export class QueryPlannerService {
       case "list":
       case "lookup":
       case "book":
-      case "export_pdf":
         actions.push({
           type: "sql",
           priority: 1,
           description: `Execute SQL for ${intent.operation} on ${intent.targets.join(", ")}`,
+        });
+        // Only generate PDF for lookups if prescriptions are targeted
+        if (intent.operation === "lookup" && intent.targets.includes("prescriptions")) {
+          actions.push({
+            type: "pdf",
+            priority: 2,
+            description: "Generate prescription PDF document",
+          });
+        }
+        runVector = false;
+        break;
+
+      case "export_pdf":
+        actions.push({
+          type: "sql",
+          priority: 1,
+          description: `Execute SQL for export_pdf on ${intent.targets.join(", ")}`,
         });
         actions.push({
           type: "pdf",
           priority: 2,
           description: "Generate prescription PDF document",
         });
-        runVector = false; // Strict SQL + PDF
+        runVector = false;
         break;
 
       case "semantic_lookup":

@@ -46,13 +46,26 @@ export class SqlBuilderService {
     }
 
     if (intent.filters.patientName) {
+      let filterValue = intent.filters.patientName;
+      let operator = "LIKE";
+      let paramValue = `%${filterValue}%`;
+
+      // Detect "starts with" intent
+      if (filterValue.toLowerCase().startsWith("starts with ")) {
+        const char = filterValue.toLowerCase().replace("starts with ", "").trim();
+        if (char.length > 0) {
+          operator = "LIKE";
+          paramValue = `${char}%`;
+        }
+      }
+
       if (mapping.table === "patients") {
-        query += ` AND (CONCAT(first_name, ' ', last_name) LIKE ?)`;
+        query += ` AND (CONCAT(first_name, ' ', last_name) ${operator} ?)`;
       } else if (mapping.table === "appointments" || mapping.table === "prescriptions") {
         // We already added the JOIN above
-        query += ` AND (CONCAT(patients.first_name, ' ', patients.last_name) LIKE ?)`;
+        query += ` AND (CONCAT(patients.first_name, ' ', patients.last_name) ${operator} ?)`;
       }
-      values.push(`%${intent.filters.patientName}%`);
+      values.push(paramValue);
     }
 
     if (intent.filters.status) {

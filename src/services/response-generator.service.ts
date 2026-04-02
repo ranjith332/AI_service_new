@@ -25,8 +25,8 @@ Rules:
 * Do NOT use the fallback "No sufficient information" or "I could not find the prescription" messages if a "pdfUrl" is present.
 * Keep the response concise and focused.
 
-If the data provided does not contain a prescription at all AND no "pdfUrl" is generated, respond with:
-"I could not find a prescription for that patient. Please ensure the name is correct."
+* If no data is found in data.sql and no vector results are present, politely inform the user that you couldn't find any information matching their request for the specific entity (e.g. "I couldn't find any patients matching...").
+* Use the target entities from the intent: ${JSON.stringify(intent.targets)} to formulate your response.
 
 User Query: "${query}"
 Data Found: ${JSON.stringify(data.sql)}
