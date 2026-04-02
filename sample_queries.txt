@@ -1,0 +1,65 @@
+Healthcare Query Sample Report
+This report contains 50 sample queries categorized by their execution strategy. These queries are designed to test the robustness of the intent classification and query planning logic established in the 10 core rules.
+
+Part 1: Simple SQL Queries (25 Samples)
+These queries trigger aggregate, list, or lookup operations. They rely on structured data and utilize the needsSql=true, needsVector=false strategy.
+
+Aggregation (Count/Total)
+"How many doctors are available today?"
+"Total number of patients registered last week."
+"Count appointments for cardiology department."
+"How many pending appointments are there?"
+"Total patients seen yesterday."
+"How many doctors have more than 10 years of experience?"
+"Count total prescriptions issued today."
+"Number of cancelled appointments this month."
+"How many patients are scheduled for Dr. Ravi?"
+"Total doctors in the ortho department."
+Listing (Show/Fetch)
+"Show all cardiologists."
+"List patients who had appointments yesterday."
+"Get all pending appointments."
+"Show doctors with more than 5 years experience."
+"Fetch prescriptions for patient Ravi."
+"List all available tokens for Dr. Sam today."
+"Display all doctors in the dermatology department."
+"Show me the last 5 appointments."
+"Fetch all registered patients."
+"List all doctors who are on holiday today."
+Lookup (Specific Details)
+"Give me the contact details of Dr. Ravi."
+"What is the status of patient Sam’s appointment?"
+"Show me the schedule for Dr. Ani."
+"Details of the appointment at 10:00 AM today."
+"Get the department of Dr. Sarah."
+Part 2: SQL + Vector (Hybrid) Queries (25 Samples)
+These queries trigger semantic_lookup. They first use SQL for identity resolution and then Vector search for descriptive/semantic information. They utilize the needsSql=true, needsVector=true strategy.
+
+Biographies and Profiles
+"Who is Dr. Ravi?"
+"Tell me about Dr. Sam’s medical background."
+"What is the bio of Dr. Ani?"
+"Provide a summary of Dr. Sarah’s expertise."
+"Who are the specialists in cardiology?"
+"Tell me about the experience of Dr. John."
+"What can you tell me about the doctors in the ortho department?"
+"Describe the professional background of Dr. Emily."
+"Who is the head of the surgery department?"
+"Tell me more about Dr. Mike's qualifications."
+Specialties and Explanations
+"What kind of cases does Dr. Ravi usually handle?"
+"Explain the specialty of the cardiology department."
+"What are the core competencies of Dr. Sam?"
+"Tell me about the treatment philosophy of Dr. Ani."
+"Search for doctors who specialize in pediatric care."
+"What is the biography of the senior-most doctor?"
+"Tell me about the doctors who handle complex surgeries."
+"Provide a description of the services offered by Dr. Sarah."
+"Who is best suited for heart-related consultations?"
+"Explain the research background of Dr. Mark."
+Contextual and Semantic Search
+"Tell me about the patient named Sam."
+"What is the history of appointments for neurology?"
+"Describe the types of prescriptions Dr. Ravi gives."
+"Who treats sports-related injuries in this hospital?"
+"Tell me about the doctors who have worked here for over 20 years."

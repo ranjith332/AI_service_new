@@ -1,78 +1,69 @@
-import type { ExecutionStrategy, QueryIntent } from "./query-schemas.ts";
-import { UnsupportedQueryError } from "../utils/errors.ts";
-
-export interface QueryPlan {
-  strategy: ExecutionStrategy;
-  runSql: boolean;
-  runVector: boolean;
-  vectorTables: string[];
-}
+import { type QueryIntent, type QueryPlan } from "./query-schemas.ts";
+import { logger } from "../utils/logger.ts";
 
 export class QueryPlannerService {
   plan(intent: QueryIntent): QueryPlan {
-    if (intent.confidence < 0.2 && !intent.needsSql && !intent.needsVector) {
-      throw new UnsupportedQueryError("The request was too ambiguous to execute safely.");
+    const actions: QueryPlan["actions"] = [];
+    let runVector = false;
+
+    switch (intent.operation) {
+      case "aggregate":
+      case "list":
+      case "lookup":
+      case "book":
+      case "export_pdf":
+        actions.push({
+          type: "sql",
+          priority: 1,
+          description: `Execute SQL for ${intent.operation} on ${intent.targets.join(", ")}`,
+        });
+        actions.push({
+          type: "pdf",
+          priority: 2,
+          description: "Generate prescription PDF document",
+        });
+        runVector = false; // Strict SQL + PDF
+        break;
+
+      case "semantic_lookup":
+        actions.push({
+          type: "sql",
+          priority: 1,
+          description: "Check structured data for entity details",
+        });
+        actions.push({
+          type: "vector",
+          priority: 2,
+          description: "Search vector knowledge base for bio/descriptions",
+        });
+        runVector = true; // Hybrid
+        break;
+
+      case "general_knowledge":
+        actions.push({
+          type: "vector",
+          priority: 1,
+          description: "Search vector knowledge base for medical info",
+        });
+        runVector = true;
+        break;
+
+      default:
+        actions.push({
+          type: "sql",
+          priority: 1,
+          description: "Default SQL execution",
+        });
+        runVector = false;
     }
 
-  const targetMapping: Record<string, string> = {
-    appointment: "appointments",
-    patient: "patients",
-    prescription: "prescriptions",
-    doctor: "doctors",
-    medicine: "medicines",
-    user: "users",
-    dependent: "dependents",
-    schedule: "schedules",
-    scheduleday: "scheduleDays",
-    doctorholiday: "doctorHolidays",
-    doctorsession: "doctorSessions"
-  };
-
-  const normalizedTarget = targetMapping[intent.target] || intent.target;
-
-  const vectorTables =
-    normalizedTarget === "prescriptions" ||
-    normalizedTarget === "medicines" ||
-    normalizedTarget === "doctors" ||
-    normalizedTarget === "patients" ||
-    normalizedTarget === "dependents" ||
-    normalizedTarget === "doctorHolidays" ||
-    normalizedTarget === "appointments"
-      ? [normalizedTarget, "schedules", "scheduleDays"]
-      : ["patients", "prescriptions", "medicines", "doctors", "dependents", "schedules", "scheduleDays"];
-
-    let runSql =
-    intent.needsSql ||
-    normalizedTarget === "unknown" ||
-    ["appointments", "patients", "doctors", "medicines", "users", "dependents", "schedules", "scheduleDays", "doctorHolidays", "doctorSessions"].includes(normalizedTarget) ||
-    intent.operation === "latest" ||
-    intent.metric !== "none";
-
-    let runVector =
-    intent.needsVector ||
-    intent.operation === "semantic_lookup" ||
-    (normalizedTarget === "unknown" && !intent.needsSql) ||
-    (["prescriptions", "medicines", "doctors"].includes(normalizedTarget) && 
-     !["list", "aggregate", "latest", "book", "export_pdf"].includes(intent.operation));
-
-
-    // FORCE SQL FOR KNOWN TARGETS
-    if (normalizedTarget === "doctors" || normalizedTarget === "appointments") {
-      runSql = true;
-    }
-
-    // FORCE SQL ONLY FOR AGGREGATION
-    if (intent.operation === "aggregate" || intent.operation === "count") {
-      runVector = false;
-    }
-
-    const strategy: ExecutionStrategy = runSql && runVector ? "hybrid" : runVector ? "vector" : "sql";
-
-    return {
-      strategy,
-      runSql,
+    const plan: QueryPlan = {
+      intent,
+      actions: actions.sort((a, b) => a.priority - b.priority),
       runVector,
-      vectorTables
     };
+
+    logger.info({ plan }, "Query plan generated");
+    return plan;
   }
 }

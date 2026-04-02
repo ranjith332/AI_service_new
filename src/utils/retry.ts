@@ -1,27 +1,28 @@
+import { logger } from "./logger.ts";
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   options: {
-    attempts?: number;
-    baseDelayMs?: number;
-    shouldRetry?: (error: unknown, attempt: number) => boolean;
-  } = {}
+    maxRetries?: number;
+    delayMs?: number;
+    description?: string;
+  } = {},
 ): Promise<T> {
-  const attempts = options.attempts ?? 3;
-  const baseDelayMs = options.baseDelayMs ?? 300;
-  const shouldRetry = options.shouldRetry ?? (() => true);
+  const { maxRetries = 3, delayMs = 1000, description = "Operation" } = options;
+  let lastError: any;
 
-  let lastError: unknown;
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  for (let i = 0; i < maxRetries; i++) {
     try {
       return await fn();
-    } catch (error) {
+    } catch (error: any) {
       lastError = error;
-      if (attempt === attempts || !shouldRetry(error, attempt)) {
-        throw error;
+      logger.warn(
+        { error: error.message, attempt: i + 1, description },
+        "Retry triggered",
+      );
+      if (i < maxRetries - 1) {
+        await new Promise((res) => setTimeout(res, delayMs * Math.pow(2, i)));
       }
-
-      await Bun.sleep(baseDelayMs * attempt);
     }
   }
 

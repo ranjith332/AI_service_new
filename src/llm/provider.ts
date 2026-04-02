@@ -1,252 +1,135 @@
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
-import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai";
-import { z } from "zod";
-
+import { ChatOpenAI } from "@langchain/openai";
 import { env } from "../config/env.ts";
-import { AppError } from "../utils/errors.ts";
 import { logger } from "../utils/logger.ts";
-import { withRetry } from "../utils/retry.ts";
 
-type ProviderName = "openai" | "nvidia_qwen";
-
-function extractTextContent(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (Array.isArray(content)) {
-    return content
-      .map((item) => {
-        if (typeof item === "string") {
-          return item;
-        }
-
-        if (item && typeof item === "object" && "text" in item) {
-          return String((item as { text: unknown }).text);
-        }
-
-        return "";
-      })
-      .join("\n")
-      .trim();
-  }
-
-  return String(content ?? "");
-}
+export type LlmModel = "gpt-4o" | "gpt-4o-mini" | "nvidia_qwen";
 
 export class LlmProvider {
-  private readonly openAiModel = env.OPENAI_API_KEY
-    ? new ChatOpenAI({
-      apiKey: env.OPENAI_API_KEY,
-      model: env.OPENAI_MODEL,
-      temperature: 0,
-      timeout: env.LLM_TIMEOUT_MS,
-      maxRetries: 0
-    })
-    : null;
+  private primaryModel: ChatOpenAI | null = null;
+  private fallbackModel: ChatOpenAI | null = null;
 
-  private readonly nvidiaQwenModel = env.NVIDIA_QWEN_API_KEY
-    ? new ChatOpenAI({
+  constructor() {
+    if (env.OPENAI_API_KEY) {
+      this.primaryModel = new ChatOpenAI({
+        openAIApiKey: env.OPENAI_API_KEY,
+        modelName: env.OPENAI_MODEL,
+        temperature: 0,
+        maxRetries: 0,
+        timeout: 30000,
+      });
+    }
+
+    if (env.NVIDIA_QWEN_API_KEY) {
+      this.fallbackModel = new ChatOpenAI({
         apiKey: env.NVIDIA_QWEN_API_KEY,
         model: env.NVIDIA_QWEN_MODEL,
         temperature: 0,
         configuration: {
-          baseURL: env.NVIDIA_QWEN_BASE_URL
+          baseURL: env.NVIDIA_QWEN_BASE_URL,
         },
-        timeout: env.LLM_TIMEOUT_MS,
-        maxRetries: 0
-      })
-    : null;
-
-  private readonly nvidiaIntentModel = env.NVIDIA_QWEN_API_KEY && env.NVIDIA_INTENT_MODEL
-    ? new ChatOpenAI({
-        apiKey: env.NVIDIA_QWEN_API_KEY,
-        model: env.NVIDIA_INTENT_MODEL,
-        temperature: 0,
-        configuration: {
-          baseURL: env.NVIDIA_QWEN_BASE_URL
-        },
-        timeout: 30000, // Shorter timeout for intent
-        maxRetries: 1
-      })
-    : null;
-
-  public readonly embeddings =
-    env.NVIDIA_EMBEDDING_MODEL && env.NVIDIA_QWEN_API_KEY
-      ? new OpenAIEmbeddings({
-          apiKey: env.NVIDIA_QWEN_API_KEY,
-          model: env.NVIDIA_EMBEDDING_MODEL,
-          configuration: {
-            baseURL: env.NVIDIA_QWEN_BASE_URL
-          }
-        })
-      : env.OPENAI_API_KEY
-        ? new OpenAIEmbeddings({
-            apiKey: env.OPENAI_API_KEY,
-            model: env.OPENAI_EMBEDDING_MODEL
-          })
-        : null;
-
-  constructor() {
-    console.log("LlmProvider initialized");
-    console.log("NVIDIA Base URL:", env.NVIDIA_QWEN_BASE_URL);
-    console.log("NVIDIA LLM Model:", env.NVIDIA_QWEN_MODEL);
-    console.log("NVIDIA Embedding Model:", env.NVIDIA_EMBEDDING_MODEL);
-    
-    if (this.embeddings) {
-      console.log("Embeddings service initialized successfully");
-    } else {
-      console.warn("Embeddings service NOT initialized (Both NVIDIA and OpenAI keys missing)");
-    }
-    
-    if (!this.openAiModel && !this.nvidiaQwenModel) {
-      throw new AppError("At least one LLM provider must be configured.", 500, "llm_not_configured");
-    }
-  }
-
-  private getCandidates(useFastModel = false): Array<{ name: ProviderName; model: ChatOpenAI }> {
-    const candidates: Array<{ name: ProviderName; model: ChatOpenAI }> = [];
-
-    // Prioritize OpenAI as it is extremely fast and reliable for all tasks
-    if (this.openAiModel) {
-      candidates.push({ name: "openai", model: this.openAiModel });
-    }
-
-    // Add Nvidia Intent Model as second choice if fast model requested
-    if (useFastModel && this.nvidiaIntentModel) {
-      candidates.push({ name: "nvidia_qwen", model: this.nvidiaIntentModel });
-    }
-
-    // Add Nvidia Qwen as fallback
-    if (this.nvidiaQwenModel) {
-      candidates.push({ name: "nvidia_qwen", model: this.nvidiaQwenModel });
-    }
-
-    return candidates;
-  }
-
-  async invokeStructured<TSchema extends z.ZodTypeAny>(
-    schema: TSchema,
-    params: {
-      system: string;
-      user: string;
-      schemaName: string;
-      useFastModel?: boolean;
-    }
-  ): Promise<{ provider: ProviderName; output: z.infer<TSchema> }> {
-    let lastError: unknown;
-
-    for (const candidate of this.getCandidates(params.useFastModel)) {
-      try {
-        // Try standard structured output first (for providers that support it natively)
-        const runnable = candidate.model.withStructuredOutput(schema, {
-          name: params.schemaName,
-          method: "jsonSchema"
-        }).withConfig({
-          timeout: this.getCandidates(params.useFastModel).length > 1 && candidate.name === "openai" ? 7000 : env.LLM_TIMEOUT_MS
-        });
-
-        const output = await withRetry(
-          () =>
-            runnable.invoke([
-              new SystemMessage(params.system),
-              new HumanMessage(params.user)
-            ]),
-          {
-            attempts: 2,
-            shouldRetry: (error: any) => 
-               candidate.name === "openai" || 
-               error.message?.includes("Rate limit") ||
-               error.message?.includes("timeout")
-          }
-        );
-
-        return {
-          provider: candidate.name,
-          output: output as z.infer<TSchema>
-        };
-      } catch (error: any) {
-        // If it's a parsing error or validation error, or a specific NVIDIA 500/429, try manual fallback
-        const isNvidiaError = candidate.name === "nvidia_qwen" && (error.message?.includes("500") || error.message?.includes("Something went wrong") || error.message?.includes("Rate limit"));
-        
-        if (error.name === "SyntaxError" || error.message?.includes("JSON") || error.message?.includes("Unexpected identifier") || error.issues || isNvidiaError) {
-          logger.warn({ provider: candidate.name, error: error.message }, "Structured output failed, falling back to manual extraction");
-          
-          try {
-            const result = await this.invokeText({ 
-              system: params.system + "\nIMPORTANT: Return ONLY valid JSON that matches the schema.", 
-              user: params.user,
-              useFastModel: params.useFastModel 
-            });
-            
-            if (!result.text) throw new Error("Empty response from LLM");
-
-            // Extract JSON from text (fenced or just between brackets)
-            const jsonMatch = result.text.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              const parsed = JSON.parse(jsonMatch[0]);
-              const validated = schema.parse(parsed);
-              return {
-                provider: result.provider,
-                output: validated
-              };
-            }
-            throw new Error("No JSON found in response");
-          } catch (fallbackError: any) {
-            logger.error({ fallbackError: fallbackError.message }, "Manual JSON extraction fallback also failed");
-          }
+        maxRetries: 1,
+        timeout: 60000,
+        modelKwargs: {
+           response_format: { type: "json_object" }
         }
-
-        logger.warn(
-          {
-            provider: candidate.name,
-            error: error instanceof Error ? error.message : error
-          },
-          "Structured LLM provider failed, trying next candidate"
-        );
-        lastError = error;
-      }
+      });
     }
 
-    throw lastError;
+    if (!this.primaryModel && !this.fallbackModel) {
+      logger.error("LLM Provider: No models available. Check .env");
+    }
   }
 
-  async invokeText(params: { system: string; user: string; useFastModel?: boolean }): Promise<{ provider: ProviderName; text: string }> {
-    let lastError: unknown;
+  private extractAndParseJson<T>(text: string, schema?: any): T {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    
+    if (start === -1 || end === -1 || end < start) {
+      logger.error({ rawResponse: text }, "No valid JSON object delimiters found in response");
+      throw new Error("No valid JSON object found in LLM response");
+    }
 
-    for (const candidate of this.getCandidates(params.useFastModel)) {
+    const jsonStr = text.substring(start, end + 1);
+    
+    try {
+      const parsed = JSON.parse(jsonStr);
+      
+      // If we have a zod schema, validate the manually parsed result
+      if (schema && typeof schema.parse === 'function') {
+        try {
+          return schema.parse(parsed) as T;
+        } catch (zodError: any) {
+          logger.warn({ zodError: zodError.message, parsed }, "Manual parse succeeded but Zod validation failed. Attempting to fix defaults...");
+          
+          // Emergency defaults if schema validation fails on the fallback
+          // We manually construct a safe object based on the schema rather than spreading everything
+          return {
+            operation: parsed.operation || "lookup",
+            justification: parsed.justification || "Automatically inferred intent",
+            targets: Array.isArray(parsed.targets) ? parsed.targets : [],
+            filters: {
+                patientName: parsed.filters?.patientName || parsed.filters?.prescriptionFor || parsed.filters?.name || undefined,
+                doctorName: parsed.filters?.doctorName || undefined,
+                status: parsed.filters?.status || undefined,
+                date: parsed.filters?.date || undefined,
+                limit: parsed.filters?.limit || 5
+            }
+          } as T;
+        }
+      }
+      
+      return parsed as T;
+    } catch (error: any) {
+      logger.error({ 
+        error: error.message, 
+        failedSnippet: jsonStr, 
+        fullRaw: text 
+      }, "Greedy JSON parse failed");
+      throw new Error(`JSON Parse error at source: ${error.message}`);
+    }
+  }
+
+  async invokeWithStructuredOutput<T>(
+    prompt: string,
+    schema: any,
+    model: LlmModel = "gpt-4o-mini"
+  ): Promise<T> {
+    if (this.primaryModel) {
       try {
-        const result = await withRetry(
-          () =>
-            candidate.model.withConfig({
-              timeout: this.getCandidates(params.useFastModel).length > 1 && candidate.name === "openai" ? 7000 : env.LLM_TIMEOUT_MS
-            }).invoke([
-              new SystemMessage(params.system),
-              new HumanMessage(params.user)
-            ]),
-          {
-            attempts: 2,
-            shouldRetry: () => candidate.name === "openai"
-          }
-        );
-
-        return {
-          provider: candidate.name,
-          text: extractTextContent(result.content)
-        };
+        const response = await this.primaryModel.withStructuredOutput(schema).invoke(prompt);
+        return response as T;
       } catch (error: any) {
-        logger.error(
-          {
-            provider: candidate.name,
-            error: error.message,
-            stack: error.stack
-          },
-          "LLM provider invocation failed"
-        );
-        lastError = error;
+        logger.warn({ error: error.message }, "Primary LLM failed, attempting fallback to NVIDIA...");
       }
     }
 
-    throw lastError;
+    if (this.fallbackModel) {
+      try {
+        const strictPrompt = `${prompt}\n\nIMPORTANT: YOU MUST RESPOND ONLY WITH RAW JSON. DO NOT INCLUDE MARKDOWN CODE BLOCKS, COMMENTS, OR ANY OTHER TEXT. START WITH { AND END WITH }.`;
+        
+        try {
+          const response = await this.fallbackModel.withStructuredOutput(schema).invoke(strictPrompt);
+          return response as T;
+        } catch (structuredError: any) {
+          logger.warn({ error: structuredError.message }, "Structured output failed for NVIDIA, attempting manual extraction...");
+          
+          const rawResponse = await this.fallbackModel.invoke(strictPrompt);
+          const rawText = typeof rawResponse.content === 'string' ? rawResponse.content : JSON.stringify(rawResponse.content);
+          return this.extractAndParseJson<T>(rawText, schema);
+        }
+      } catch (error: any) {
+        logger.error({ error: error.message }, "Fallback LLM (NVIDIA) also failed.");
+        throw error;
+      }
+    }
+
+    throw new Error("No LLM provider available to handle request");
+  }
+
+  getFastModel() {
+    if (this.primaryModel && this.fallbackModel) {
+      return this.primaryModel.withFallbacks([this.fallbackModel]);
+    }
+    return this.primaryModel || this.fallbackModel;
   }
 }
