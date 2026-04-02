@@ -1,50 +1,48 @@
-import { DateTime } from "luxon";
+import dayjs from "dayjs-ext";
+import { BadRequestError } from "./errors.ts";
 
-export type TimePreset = "today" | "yesterday" | "this_week" | "this_month" | "all_time" | "latest" | "custom";
+export function resolveDateRange(dateKeyword: string | undefined): {
+  start: string;
+  end: string;
+} {
+  const now = dayjs();
+  let start = now.startOf("day");
+  let end = now.endOf("day");
 
-export interface TimeRange {
-  preset: TimePreset;
-  start?: string | null;
-  end?: string | null;
-}
-
-export function resolveTimeRange(range: TimeRange, timeZone: string): { start: string | null; end: string | null } {
-  const now = DateTime.now().setZone(timeZone);
-
-  switch (range.preset) {
-    case "today":
-      return {
-        start: now.startOf("day").toUTC().toISO(),
-        end: now.endOf("day").plus({ milliseconds: 1 }).toUTC().toISO()
-      };
-    case "yesterday": {
-      const yesterday = now.minus({ days: 1 });
-      return {
-        start: yesterday.startOf("day").toUTC().toISO(),
-        end: yesterday.endOf("day").plus({ milliseconds: 1 }).toUTC().toISO()
-      };
-    }
-    case "this_week":
-      return {
-        start: now.startOf("week").toUTC().toISO(),
-        end: now.endOf("week").plus({ milliseconds: 1 }).toUTC().toISO()
-      };
-    case "this_month":
-      return {
-        start: now.startOf("month").toUTC().toISO(),
-        end: now.endOf("month").plus({ milliseconds: 1 }).toUTC().toISO()
-      };
-    case "custom":
-      return {
-        start: range.start ?? null,
-        end: range.end ?? null
-      };
-    case "latest":
-    case "all_time":
-    default:
-      return {
-        start: null,
-        end: null
-      };
+  if (!dateKeyword) {
+    return {
+      start: start.toISOString(),
+      end: end.toISOString(),
+    };
   }
+
+  const k = dateKeyword.toLowerCase();
+
+  if (k.includes("today")) {
+    // Current day
+  } else if (k.includes("yesterday")) {
+    start = now.subtract(1, "day").startOf("day");
+    end = now.subtract(1, "day").endOf("day");
+  } else if (k.includes("week") && k.includes("last")) {
+    start = now.subtract(1, "week").startOf("week");
+    end = now.subtract(1, "week").endOf("week");
+  } else if (k.includes("month") && k.includes("last")) {
+    start = now.subtract(1, "month").startOf("month");
+    end = now.subtract(1, "month").endOf("month");
+  } else if (k.includes("tomorrow")) {
+    start = now.add(1, "day").startOf("day");
+    end = now.add(1, "day").endOf("day");
+  } else if (k.match(/\d{4}-\d{2}-\d{2}/)) {
+    const specificDate = dayjs(k);
+    if (!specificDate.isValid()) {
+      throw new BadRequestError(`Invalid date format: ${dateKeyword}`);
+    }
+    start = specificDate.startOf("day");
+    end = specificDate.endOf("day");
+  }
+
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+  };
 }

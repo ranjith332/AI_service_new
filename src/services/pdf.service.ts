@@ -1,113 +1,167 @@
-import PDFDocument from "pdfkit";
 import { logger } from "../utils/logger.ts";
-
-export interface PrescriptionData {
-    id: number;
-    patientName: string;
-    patientAge?: number;
-    patientGender?: string;
-    doctorName: string;
-    doctorSpeciality?: string;
-    date: string;
-    problem?: string;
-    test?: string;
-    advice?: string;
-    nextVisit?: string;
-    medicines: Array<{
-        name: string;
-        dosage: string;
-        duration: string;
-        time: string;
-        comment?: string;
-    }>;
-}
+import { DatabaseClient, type SqlQuery } from "../db/client.ts";
+import PDFDocument from "pdfkit";
+import fs from "node:fs";
+import path from "node:path";
 
 export class PdfService {
-    async generatePrescriptionPdf(data: PrescriptionData): Promise<Buffer> {
-        return new Promise((resolve, reject) => {
-            const doc = new PDFDocument({ margin: 50 });
-            const buffers: Buffer[] = [];
+  constructor(private readonly db: DatabaseClient) {}
 
-            doc.on("data", (chunk) => buffers.push(chunk));
-            doc.on("end", () => resolve(Buffer.concat(buffers)));
-            doc.on("error", (err) => reject(err));
+  async generatePrescriptionPdf(prescriptionId: number, tenantId: string): Promise<string> {
+    logger.info({ prescriptionId, tenantId }, "Generating professional prescription PDF");
 
-            // Header - Hospital Branding
-            doc.fillColor("#444444")
-               .fontSize(20)
-               .text("DOCTOR HEALIX HMS", 110, 50)
-               .fontSize(10)
-               .text("Advanced Healthcare Management System", 110, 80)
-               .text("123 Healthcare Blvd, Medical City", 110, 95)
-               .moveDown();
-
-            // Divider
-            doc.moveTo(50, 115).lineTo(550, 115).strokeColor("#eeeeee").stroke();
-
-            // Patient & Doctor Info
-            doc.fontSize(12).fillColor("#000000");
-            doc.text(`Patient: ${data.patientName}`, 50, 130);
-            if (data.patientAge) doc.text(`Age: ${data.patientAge}`, 50, 145);
-            if (data.patientGender) doc.text(`Gender: ${data.patientGender}`, 50, 160);
-
-            doc.text(`Doctor: ${data.doctorName}`, 350, 130);
-            if (data.doctorSpeciality) doc.text(`Speciality: ${data.doctorSpeciality}`, 350, 145);
-            doc.text(`Date: ${data.date}`, 350, 160);
-
-            // Clinical Section
-            doc.moveDown(2);
-            doc.fontSize(14).fillColor("#2c3e50").text("Clinical Findings", { underline: true });
-            doc.moveDown(0.5);
-            doc.fontSize(10).fillColor("#333333");
-            if (data.problem) doc.text(`Problem: ${data.problem}`);
-            if (data.test) doc.text(`Recommended Tests: ${data.test}`);
-            
-            // Medicines Table
-            doc.moveDown(2);
-            doc.fontSize(14).fillColor("#2c3e50").text("Prescribed Medicines", { underline: true });
-            doc.moveDown(1);
-
-            // Table Header
-            const tableTop = doc.y;
-            doc.fontSize(10).fillColor("#000000");
-            doc.text("Medicine Name", 50, tableTop, { width: 200 });
-            doc.text("Dosage", 250, tableTop, { width: 100 });
-            doc.text("Duration", 350, tableTop, { width: 100 });
-            doc.text("Instruction", 450, tableTop, { width: 100 });
-
-            doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).strokeColor("#dddddd").stroke();
-
-            let currentY = tableTop + 25;
-            data.medicines.forEach((med) => {
-                doc.text(med.name, 50, currentY, { width: 200 });
-                doc.text(med.dosage, 250, currentY, { width: 100 });
-                doc.text(med.duration, 350, currentY, { width: 100 });
-                doc.text(med.time, 450, currentY, { width: 100 });
-                currentY += 20;
-            });
-
-            // Advice Section
-            if (data.advice) {
-                doc.moveDown(2);
-                doc.fontSize(14).fillColor("#2c3e50").text("Advice & Instructions", { underline: true });
-                doc.moveDown(0.5);
-                doc.fontSize(10).fillColor("#333333").text(data.advice);
-            }
-
-            if (data.nextVisit) {
-                doc.moveDown(1);
-                doc.fontSize(10).fillColor("#e74c3c").font("Helvetica-Bold").text(`Next Visit: ${data.nextVisit}`);
-                doc.font("Helvetica");
-            }
-
-            // Footer
-            const footerY = 750;
-            doc.moveTo(50, footerY).lineTo(550, footerY).strokeColor("#eeeeee").stroke();
-            doc.fontSize(8).fillColor("#aaaaaa")
-               .text("This is an electronically generated document. No signature is required.", 50, footerY + 10, { align: "center" });
-
-            doc.end();
-            logger.info({ prescriptionId: data.id }, "PDF generation complete");
-        });
+    // 1. Fetch Prescription Details (Try common table names)
+    let prescription: any = null;
+    const tableCandidates = ["prescriptions", "opd_prescriptions", "ipd_prescriptions"];
+    
+    for (const table of tableCandidates) {
+      try {
+        const query: SqlQuery = {
+          text: `
+            SELECT 
+              p.*,
+              pt.first_name as patient_first_name, pt.last_name as patient_last_name, pt.gender as patient_gender, pt.dob as patient_dob,
+              d.*, d.first_name as doctor_first_name, d.last_name as doctor_last_name
+            FROM ${table} p
+            JOIN patients pt ON pt.id = p.patient_id
+            JOIN doctors d ON d.id = p.doctor_id
+            WHERE p.id = ? AND p.tenant_id = ?
+          `,
+          values: [prescriptionId, tenantId],
+        };
+        const result = await this.db.query(query);
+        if (result.rowCount > 0) {
+          prescription = result.rows[0];
+          break;
+        }
+      } catch (e) {
+        // Continue to next table candidate
+      }
     }
+
+    if (!prescription) {
+      throw new Error(`Prescription ${prescriptionId} not found in any supported tables.`);
+    }
+
+    // 2. Fetch Medicines (Try common item table names)
+    let medicines: any[] = [];
+    const itemTableCandidates = ["prescription_medicines", "prescription_items", "opd_prescription_items", "ipd_prescription_items"];
+    
+    for (const table of itemTableCandidates) {
+      try {
+        const medQuery: SqlQuery = {
+          text: `SELECT * FROM ${table} WHERE prescription_id = ?`,
+          values: [prescriptionId],
+        };
+        const medResult = await this.db.query(medQuery);
+        if (medResult.rowCount > 0 || medResult.rows.length > 0) {
+          medicines = medResult.rows;
+          break;
+        }
+      } catch (e) {
+        // Continue
+      }
+    }
+
+    // 3. Setup File Path
+    const storagePath = path.join(process.cwd(), "storage", "prescriptions", tenantId.toString());
+    if (!fs.existsSync(storagePath)) {
+      fs.mkdirSync(storagePath, { recursive: true });
+    }
+    const fileName = `${prescriptionId}.pdf`;
+    const filePath = path.join(storagePath, fileName);
+
+    // 4. Generate PDF
+    return new Promise((resolve, reject) => {
+      try {
+        const doc = new PDFDocument({ margin: 50 });
+        const stream = fs.createWriteStream(filePath);
+
+        doc.pipe(stream);
+
+        const data = prescription;
+
+        // Header
+        doc.font("Helvetica-Bold").fontSize(20).text("DOCTOR HEALIX HOSPITAL", { align: "center" });
+        doc.font("Helvetica").fontSize(10).text("Precision Medical Care & AI Assistance", { align: "center" });
+        doc.moveDown();
+        doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+        doc.moveDown();
+
+        // Doctor Info (Right Side)
+        doc.font("Helvetica-Bold").fontSize(12).text(`Dr. ${data.doctor_first_name} ${data.doctor_last_name}`, { align: "right" });
+        const spec = data.specialist || data.speciality || data.specialty || data.doctor_speciality || "General Physician";
+        doc.font("Helvetica").fontSize(10).text(`${spec}`, { align: "right" });
+        doc.moveDown();
+
+        // Patient Info
+        doc.font("Helvetica-Bold").fontSize(12).text("PATIENT INFORMATION", { underline: true });
+        doc.font("Helvetica").fontSize(10).text(`Name: ${data.patient_first_name} ${data.patient_last_name}`);
+        doc.text(`Gender: ${data.patient_gender || "N/A"} | Date of Birth: ${data.patient_dob || "N/A"}`);
+        const dateStr = data.created_at ? new Date(data.created_at).toLocaleDateString() : new Date().toLocaleDateString();
+        doc.text(`Date: ${dateStr}`);
+        doc.moveDown();
+
+        // Diagnosis / Problem
+        const problem = data.problem || data.diagnosis || data.chief_complaint || "";
+        if (problem) {
+          doc.font("Helvetica-Bold").fontSize(12).text("DIAGNOSIS / CHIEF COMPLAINT", { underline: true });
+          doc.font("Helvetica").fontSize(10).text(problem);
+          doc.moveDown();
+        }
+
+        // RX Section (Medicines)
+        doc.font("Helvetica-Bold").fontSize(14).text("RX / MEDICATIONS", { underline: true });
+        doc.moveDown(0.5);
+
+        if (medicines.length > 0) {
+          medicines.forEach((med: any, index: number) => {
+            const medName = med.medicine_name || med.name || med.item_name || "Unknown Medicine";
+            doc.font("Helvetica-Bold").fontSize(10).text(`${index + 1}. ${medName}`);
+            const dosage = med.dosage || med.dose || "As directed";
+            const duration = med.duration || "N/A";
+            const time = med.time || med.timing || "N/A";
+            doc.font("Helvetica").text(`   Dosage: ${dosage} | Duration: ${duration} | Time: ${time}`);
+            if (med.comment || med.note) doc.text(`   Note: ${med.comment || med.note}`, { oblique: true });
+            doc.moveDown(0.5);
+          });
+        } else {
+          doc.font("Helvetica").fontSize(10).text("No medications listed.");
+        }
+
+        doc.moveDown();
+
+        // Advice / Tests
+        const advice = data.advice || data.note || "";
+        const tests = data.test || data.investigation || "";
+        if (tests || advice) {
+          doc.font("Helvetica-Bold").fontSize(12).text("ADVICE & TESTS", { underline: true });
+          doc.font("Helvetica");
+          if (tests) doc.fontSize(10).text(`Tests: ${tests}`);
+          if (advice) doc.fontSize(10).text(`Advice: ${advice}`);
+          doc.moveDown();
+        }
+
+        // Footer
+        doc.moveTo(50, 700).lineTo(550, 700).stroke();
+        doc.font("Helvetica").fontSize(8).text("This is a computer-generated prescription from Doctor Healix AI Service.", 50, 710, { align: "center" });
+
+        doc.end();
+
+        stream.on("finish", () => {
+          const publicUrl = `/storage/prescriptions/${tenantId}/${fileName}`;
+          logger.info({ filePath, publicUrl }, "PDF generated successfully");
+          resolve(publicUrl);
+        });
+
+        stream.on("error", (err) => {
+          logger.error({ err }, "Stream error during PDF generation");
+          reject(err);
+        });
+      } catch (err) {
+        logger.error({ err }, "Unexpected error in PDF generation");
+        reject(err);
+      }
+    });
+  }
 }

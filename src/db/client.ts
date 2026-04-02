@@ -1,70 +1,86 @@
-import { drizzle, type MySql2Database } from "drizzle-orm/mysql2";
-import { createPool as createMysqlPool, type Pool as MysqlPool } from "mysql2/promise";
-
+import { createPool, type Pool, type PoolOptions } from "mysql2/promise";
 import { env } from "../config/env.ts";
 import { logger } from "../utils/logger.ts";
-import * as schema from "./schema.ts";
 
 export interface SqlQuery {
   text: string;
-  values: unknown[];
-  description: string;
+  values?: any[];
+  description?: string;
 }
 
-export interface QueryResultRow {
-  [key: string]: unknown;
-}
+export type QueryResultRow = Record<string, any>;
 
-export interface SqlExecutionResult<T extends QueryResultRow = QueryResultRow> {
+export interface QueryResult<T extends QueryResultRow = QueryResultRow> {
   rows: T[];
   rowCount: number;
 }
 
 export class DatabaseClient {
-  public readonly mysqlPool: MysqlPool;
-  public readonly orm: MySql2Database<typeof schema>;
+  private pool: Pool;
 
-  constructor() {
-    this.mysqlPool = createMysqlPool({
-      uri: env.DATABASE_URL,
-      connectionLimit: env.DB_POOL_MAX,
+  constructor(options: Partial<PoolOptions> = {}) {
+    logger.info({ 
+        host: env.DB_HOST, 
+        user: env.DB_USER, 
+        database: env.DB_NAME,
+        port: env.DB_PORT 
+    }, "Initializing Database Pool...");
+
+    this.pool = createPool({
+      host: env.DB_HOST,
+      port: parseInt(env.DB_PORT),
+      user: env.DB_USER,
+      password: env.DB_PASSWORD,
+      database: env.DB_NAME,
       waitForConnections: true,
-      queueLimit: 0
-    });
-
-    this.orm = drizzle(this.mysqlPool, {
-      schema,
-      mode: "default"
+      connectionLimit: 10,
+      queueLimit: 0,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10000,
+      connectTimeout: 10000,
+      ssl: false,
+      ...options,
     });
   }
 
-  async query<T extends QueryResultRow = QueryResultRow>(query: SqlQuery): Promise<SqlExecutionResult<T>> {
-    logger.debug(
-      {
-        description: query.description,
-        valueCount: query.values.length
-      },
-      "Executing tenant-safe SQL query"
-    );
+  async query<T extends QueryResultRow = QueryResultRow>(
+    query: SqlQuery,
+  ): Promise<QueryResult<T>> {
+    const start = Date.now();
+    try {
+      const [rows] = await this.pool.query(query.text, query.values);
+      const duration = Date.now() - start;
 
-    const [rows] = await this.mysqlPool.query(query.text, query.values);
-    const output = rows as T[];
+      logger.info(
+        {
+          description: query.description,
+          duration,
+          rowCount: Array.isArray(rows) ? rows.length : 0,
+        },
+        "Database query executed",
+      );
 
-    logger.debug(
-      {
-        description: query.description,
-        rowCount: output.length
-      },
-      "SQL query execution complete"
-    );
-
-    return {
-      rows: output,
-      rowCount: output.length
-    };
+      return {
+        rows: Array.isArray(rows) ? (rows as T[]) : [],
+        rowCount: Array.isArray(rows) ? rows.length : 0,
+      };
+    } catch (error: any) {
+      logger.error(
+        { 
+          error: error.message, 
+          code: error.code, 
+          errno: error.errno, 
+          sql: query.text,
+          host: env.DB_HOST,
+          user: env.DB_USER
+        }, 
+        "Database query failed"
+      );
+      throw error;
+    }
   }
 
   async close(): Promise<void> {
-    await this.mysqlPool.end();
+    await this.pool.end();
   }
 }

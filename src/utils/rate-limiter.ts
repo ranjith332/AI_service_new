@@ -1,35 +1,27 @@
-import { RateLimitError } from "./errors.ts";
+import { UnauthorizedError } from "./errors.ts";
 
-interface Bucket {
-  count: number;
-  resetAt: number;
-}
+export class RateLimiter {
+  private requests = new Map<string, number[]>();
+  private readonly windowMs: number;
+  private readonly maxRequests: number;
 
-export class InMemoryRateLimiter {
-  private readonly buckets = new Map<string, Bucket>();
+  constructor(windowMs: number = 60000, maxRequests: number = 100) {
+    this.windowMs = windowMs;
+    this.maxRequests = maxRequests;
+  }
 
-  constructor(
-    private readonly windowMs: number,
-    private readonly maxRequests: number
-  ) {}
-
-  consume(key: string): void {
+  async check(key: string): Promise<void> {
     const now = Date.now();
-    const bucket = this.buckets.get(key);
-
-    if (!bucket || bucket.resetAt <= now) {
-      this.buckets.set(key, {
-        count: 1,
-        resetAt: now + this.windowMs
-      });
-      return;
+    const windowStart = now - this.windowMs;
+    
+    let userRequests = this.requests.get(key) || [];
+    userRequests = userRequests.filter((timestamp) => timestamp > windowStart);
+    
+    if (userRequests.length >= this.maxRequests) {
+      throw new UnauthorizedError("Rate limit exceeded. Please try again later.");
     }
-
-    if (bucket.count >= this.maxRequests) {
-      throw new RateLimitError();
-    }
-
-    bucket.count += 1;
-    this.buckets.set(key, bucket);
+    
+    userRequests.push(now);
+    this.requests.set(key, userRequests);
   }
 }
